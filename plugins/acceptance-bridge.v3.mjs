@@ -87,7 +87,7 @@ export function apply(ctx, config = {}) {
       round: { type: 'number', required: true, description: '验收轮次（正整数）；同项目同轮次号会覆盖该轮产物' },
       round_type: { type: 'string', enum: ['例行验收', '复验'], description: '轮次类型；复验会基于上一轮轮次记录做变更识别' },
     },
-    output: { schema: { type: 'json' }, render: jsonRender },
+    output: { schema: { type: 'object' }, render: jsonRender },
     timeoutMs: 900000,
     async execute(args, exec) {
       requireConfig()
@@ -152,7 +152,7 @@ export function apply(ctx, config = {}) {
     parameters: {
       project: { type: 'string', description: '可选：只列指定项目的轮次' },
     },
-    output: { schema: { type: 'json' }, render: jsonRender },
+    output: { schema: { type: 'object' }, render: jsonRender },
     async execute(args, exec) {
       requireConfig()
       const rootTarget = await fs.resolve(outRoot)
@@ -187,7 +187,7 @@ export function apply(ctx, config = {}) {
       round: { type: 'number', required: true, description: '轮次（正整数）' },
       artifact: { type: 'string', required: true, enum: ['report', 'issues', 'facts', 'static_facts', 'record'], description: '产物类型' },
     },
-    output: { schema: { type: 'json' }, render: jsonRender },
+    output: { schema: { type: 'object' }, render: jsonRender },
     async execute(args, exec) {
       requireConfig()
       const project = validateProject(args.project)
