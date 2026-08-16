@@ -53,8 +53,8 @@ function jsonRender(_args, value) {
   return [{ type: 'text', text: JSON.stringify(value, null, 2) }]
 }
 
-/** harness fs 服务 → lib 所需的适配器（全部绝对路径）。 */
-function harnessAdapter(fs) {
+/** harness fs 服务 → lib 所需的适配器（全部绝对路径）。写入时盖会话沙箱策略戳。 */
+function harnessAdapter(fs, policyOf) {
   return {
     async stat(absPath) {
       const target = await fs.resolve(absPath)
@@ -74,12 +74,32 @@ function harnessAdapter(fs) {
       }
     },
     async writeText(absPath, content) {
-      await fs.writeText(await fs.resolve(absPath), content)
+      try {
+        await fs.writeText(await fs.resolve(absPath), content, undefined, undefined, policyOf())
+      } catch (error) {
+        if (error?.code === 'FS_SANDBOX_DENIED') {
+          throw new Error(`[sandbox: 产物目录写入被会话沙箱拒绝] ${absPath} 不在当前会话可写范围内。`
+            + `请把 out_dir 指向会话工作区内的目录（如 <交付物>\\acceptance），或切换会话权限（/permission danger-full-access）后重试。原始信息：${error.message}`)
+        }
+        throw error
+      }
     },
     async listDir(absPath) {
       const entries = await fs.listDir(await fs.resolve(absPath))
       return entries.map((entry) => ({ name: entry.name, type: entry.type, size: entry.size ?? 0 }))
     },
+  }
+}
+
+/** 解析当前工具调用所属会话的沙箱策略（会话不存在/服务缺失时回落部署默认）。 */
+function resolveSessionPolicy(ctx, exec) {
+  const sandboxPolicy = ctx.get('sandboxPolicy')
+  const agent = exec?.agent
+  if (sandboxPolicy === undefined || agent === undefined) return null
+  try {
+    return sandboxPolicy.resolve({ session: agent.session })
+  } catch {
+    return null
   }
 }
 
@@ -91,7 +111,6 @@ export function apply(ctx, config = {}) {
   if (fs === undefined || tools === undefined) return
   const presetRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url))) // 插件工程根
   const legacyOutRoot = String(config.outDir || path.join(presetRoot, 'acceptance')) // 读/列缺省：插件工程历史产物
-  const adapter = harnessAdapter(fs)
 
   /** 解析产物根目录：工具参数 out_dir > config.outDir > 用途回落值。 */
   function resolveOutDir(args, fallback) {
@@ -108,7 +127,7 @@ export function apply(ctx, config = {}) {
 
   const runTool = {
     name: 'acceptance_run',
-    description: '对交付物执行一轮确定性验收分析（内建实现：安全解包、docx/pdf/md/xlsx 解析、tree-sitter 静态分析、补缺识别、轮次快照与变更识别；绝不调用 LLM、不产出报告与结论——四类偏差、问题分级、业务画像、接手方案等语义判断由 agent 基于返回的事实包完成）。验收前先向用户询问：「交付物目录」（供应商交付，必填）与「需求/合同目录」（甲方基线，可选），均用绝对路径；产物目录可选——缺省放交付物同级（<交付物父目录>\\acceptance），用户可指定任意目录。大项目可能耗时数分钟。产物落盘 <产物根>/<项目>-轮次<N>/（确定性事实.json、静态事实.json、轮次记录.json），事实包同时内联在返回的 facts 字段。复验轮次（round_type=复验）自动识别变更并携带上轮问题清单（previous_issues），agent 应自行评估修复状态。',
+    description: '对交付物执行一轮确定性验收分析（内建实现：安全解包、docx/pdf/md/xlsx 解析、tree-sitter 静态分析、架构事实〔依赖图/复杂度度量/依赖清单/重复片段〕、补缺识别、轮次快照与变更识别；绝不调用 LLM、不产出报告与结论——语义判断由 agent 基于返回的事实包完成）。验收前先向用户询问：「交付物目录」（供应商交付，必填）与「需求/合同目录」（甲方基线，可选），均用绝对路径；产物目录可选——缺省放交付物同级（<交付物父目录>\\acceptance），用户可指定任意目录，但必须在会话沙箱可写范围内（被拒时用交付物目录内或会话工作区内路径，或请用户 /permission danger-full-access）。大项目可能耗时数分钟。产物落盘 <产物根>/<项目>-轮次<N>/（确定性事实.json、静态事实.json、轮次记录.json），事实包同时内联在返回的 facts 字段（大项目会很大，分节细节用 acceptance_read 按 artifact 取数，不要整包重读）。复验轮次（round_type=复验）自动识别变更并携带上轮问题清单（previous_issues），agent 应自行评估修复状态，并对比两轮事实包的 architecture_facts 追踪架构趋势。',
     parameters: {
       type: 'object',
       properties: {
@@ -123,7 +142,7 @@ export function apply(ctx, config = {}) {
     },
     output: { schema: { type: 'object' }, render: jsonRender },
     timeoutMs: 600000,
-    async execute(args) {
+    async execute(args, exec) {
       const deliverable = normPath(args.deliverable)
       if (deliverable === null) throw new Error('deliverable 必填')
       const project = validateProject(args.project)
@@ -136,6 +155,9 @@ export function apply(ctx, config = {}) {
         baseline = normPath(args.baseline)
         if (baseline === null) throw new Error('baseline 路径无效')
       }
+      // 每次调用独立解析会话沙箱策略并盖在写入上（会话 /permission 与工作区跟随本会话）
+      const policy = resolveSessionPolicy(ctx, exec)
+      const adapter = harnessAdapter(fs, () => policy)
       const startedAt = Date.now()
       const facts = await runFacts({
         adapter,
@@ -231,7 +253,7 @@ export function apply(ctx, config = {}) {
     ctx.effect(() => systemPrompt.section({
       name: 'tool:acceptance',
       order: 121,
-      text: '交付验收工具桥：验收前先向用户询问——「交付物目录」（供应商交付，必填）与「需求/合同目录」（甲方基线，可选），均用绝对路径；「产物目录」可选：缺省放交付物同级（<交付物父目录>\\acceptance），用户也可指定任意目录（out_dir，验收全程统一使用）。调用 acceptance_run（只执行确定性层：解析/静态分析/补缺/轮次快照，事实包内联返回，绝不调用 LLM）；四类偏差、问题分级、业务画像、接手方案等语义判断由你基于事实包完成（可配合 read/grep 下钻交付物代码与文档取证）。术语与判定口径：验收结论为通过/打回/无法判定（无基线为建议通过/建议整改/无法判定）。复验轮次：对比事实包 changes 与 previous_issues 识别变更与修复状态。领域专项：车辆诊断（UDS）业务描述见插件工程 profiles/diagnostic/业务描述.md，相关交付物验收时应先读它并按其检查重点执行。',
+      text: '交付验收工具桥：验收前先向用户询问——「交付物目录」（供应商交付，必填）与「需求/合同目录」（甲方基线，可选），均用绝对路径；「产物目录」可选：缺省放交付物同级（<交付物父目录>\\acceptance），用户也可指定任意目录（out_dir，验收全程统一使用；必须在会话沙箱可写范围内，被拒时改用交付物目录内或会话工作区内路径，或请用户 /permission danger-full-access）。调用 acceptance_run（只执行确定性层：解析/静态分析/架构事实〔依赖图/复杂度度量/依赖清单/重复片段〕/补缺/轮次快照，事实包内联返回，绝不调用 LLM；事实包大时分节用 acceptance_read 取数，勿整包重读）。四类偏差、问题分级、业务画像、接手方案、架构与质量评审等语义判断由你基于事实包完成（可配合 read/grep 下钻交付物代码与文档取证）。术语与判定口径：验收结论为通过/打回/无法判定（无基线为建议通过/建议整改/无法判定）。产出形态：必须产出「验收文档组」六个文件到本轮产物目录（用你自己的 write 工具写）：00-验收总览.md（判定+产物索引）、01-交付物概况与业务画像.md、02-偏差明细与取证.md、03-问题清单.md（供整改）、04-架构与质量评审.md、05-接手方案.md——每个文件承载对应章节的**细节**（逐条证据、数据、分级），总览只做结论与索引，不要把所有章节塞进一个文件。架构与质量评审：架构梳理（依赖图/模块边界观察）→ 优化项清单（高/中/低分组，每条=证据〔文件:行号+度量数字〕+判断+建议）→ 与接手方案衔接；检查清单参考：依赖环、孤儿模块、可达性、分层违规、超阈值复杂度（函数>80行/圈复杂度>15/文件>1000行）、重复片段；风格类主观项不列入优化项；优化项不影响验收结论、不进整改清单、不参与问题分级。复验轮次：对比事实包 changes 与 previous_issues 识别变更与修复状态，并对比两轮 architecture_facts 追踪架构趋势（新增/消失依赖环、复杂度增减、依赖增删）；「未检查」绝不表述为「无」。领域专项：车辆诊断（UDS）业务描述见插件工程 profiles/diagnostic/业务描述.md，相关交付物验收时应先读它并按其检查重点执行。',
     }), 'prompt: acceptance guide')
   }
 }
