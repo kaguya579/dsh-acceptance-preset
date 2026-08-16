@@ -1,0 +1,2 @@
+name: acceptance
+description: 交付验收助手：在 standard 全能力基础上增加交付验收工具桥（确定性事实 + agent 语义分析）。
