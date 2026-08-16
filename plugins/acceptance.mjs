@@ -90,12 +90,25 @@ export function apply(ctx, config = {}) {
   const tools = ctx.get('tools')
   if (fs === undefined || tools === undefined) return
   const presetRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url))) // 插件工程根
-  const outRoot = String(config.outDir || path.join(presetRoot, 'acceptance'))
+  const legacyOutRoot = String(config.outDir || path.join(presetRoot, 'acceptance')) // 读/列缺省：插件工程历史产物
   const adapter = harnessAdapter(fs)
+
+  /** 解析产物根目录：工具参数 out_dir > config.outDir > 用途回落值。 */
+  function resolveOutDir(args, fallback) {
+    if (typeof args.out_dir === 'string' && args.out_dir.trim() !== '') {
+      const explicit = normPath(args.out_dir)
+      if (explicit === null) throw new Error('out_dir 路径无效')
+      return explicit
+    }
+    if (typeof config.outDir === 'string' && config.outDir.trim() !== '') {
+      return String(config.outDir)
+    }
+    return fallback
+  }
 
   const runTool = {
     name: 'acceptance_run',
-    description: '对交付物执行一轮确定性验收分析（内建实现：安全解包、docx/pdf/md/xlsx 解析、tree-sitter 静态分析、补缺识别、轮次快照与变更识别；绝不调用 LLM、不产出报告与结论——四类偏差、问题分级、业务画像、接手方案等语义判断由 agent 基于返回的事实包完成）。验收前先向用户分别询问两个目录：「交付物目录」（供应商交付）与「需求/合同目录」（甲方基线，可选），均用绝对路径。大项目可能耗时数分钟。产物落盘 插件工程/acceptance/<项目>-轮次<N>/（确定性事实.json、静态事实.json、轮次记录.json），事实包同时内联在返回的 facts 字段。复验轮次（round_type=复验）自动识别变更并携带上轮问题清单（previous_issues），agent 应自行评估修复状态。',
+    description: '对交付物执行一轮确定性验收分析（内建实现：安全解包、docx/pdf/md/xlsx 解析、tree-sitter 静态分析、补缺识别、轮次快照与变更识别；绝不调用 LLM、不产出报告与结论——四类偏差、问题分级、业务画像、接手方案等语义判断由 agent 基于返回的事实包完成）。验收前先向用户询问：「交付物目录」（供应商交付，必填）与「需求/合同目录」（甲方基线，可选），均用绝对路径；产物目录可选——缺省放交付物同级（<交付物父目录>\\acceptance），用户可指定任意目录。大项目可能耗时数分钟。产物落盘 <产物根>/<项目>-轮次<N>/（确定性事实.json、静态事实.json、轮次记录.json），事实包同时内联在返回的 facts 字段。复验轮次（round_type=复验）自动识别变更并携带上轮问题清单（previous_issues），agent 应自行评估修复状态。',
     parameters: {
       type: 'object',
       properties: {
@@ -104,6 +117,7 @@ export function apply(ctx, config = {}) {
         project: { type: 'string', description: '项目名称（字母、数字、中文、连字符；不含路径分隔符与引号）' },
         round: { type: 'number', description: '验收轮次（正整数）；同项目同轮次号会覆盖该轮产物' },
         round_type: { type: 'string', enum: ['例行验收', '复验'], description: '轮次类型；复验会基于上一轮轮次记录做变更识别' },
+        out_dir: { type: 'string', description: '可选：产物根目录（绝对路径）；缺省为交付物同级的 acceptance 目录' },
       },
       required: ['deliverable', 'project', 'round'],
     },
@@ -115,7 +129,8 @@ export function apply(ctx, config = {}) {
       const project = validateProject(args.project)
       const round = validateRound(args.round)
       const roundType = args.round_type === '复验' ? '复验' : '例行验收'
-      const roundDir = path.join(outRoot, `${project}-轮次${round}`)
+      const outDir = resolveOutDir(args, path.join(path.dirname(deliverable), 'acceptance'))
+      const roundDir = path.join(outDir, `${project}-轮次${round}`)
       let baseline = null
       if (typeof args.baseline === 'string' && args.baseline.trim() !== '') {
         baseline = normPath(args.baseline)
@@ -141,15 +156,17 @@ export function apply(ctx, config = {}) {
 
   const listTool = {
     name: 'acceptance_list_rounds',
-    description: '列出验收产物根目录下已完成的验收轮次（项目、轮次号与各轮产物文件清单），供复验与跨轮对比使用。',
+    description: '列出验收产物根目录下已完成的验收轮次（项目、轮次号与各轮产物文件清单），供复验与跨轮对比使用。产物根缺省为插件工程历史产物目录，可用 out_dir 指定（与验收时的产物目录一致）。',
     parameters: {
       type: 'object',
       properties: {
         project: { type: 'string', description: '可选：只列指定项目的轮次' },
+        out_dir: { type: 'string', description: '可选：产物根目录（绝对路径）；缺省为插件工程历史产物目录' },
       },
     },
     output: { schema: { type: 'object' }, render: jsonRender },
     async execute(args) {
+      const outRoot = resolveOutDir(args, legacyOutRoot)
       if ((await adapter.stat(outRoot)) === null) {
         return { rounds: [], note: '验收产物根目录尚不存在（还没有任何验收轮次）' }
       }
@@ -182,11 +199,13 @@ export function apply(ctx, config = {}) {
         project: { type: 'string', description: '项目名称' },
         round: { type: 'number', description: '轮次（正整数）' },
         artifact: { type: 'string', enum: ['report', 'issues', 'facts', 'static_facts', 'record'], description: '产物类型' },
+        out_dir: { type: 'string', description: '可选：产物根目录（绝对路径）；缺省为插件工程历史产物目录' },
       },
       required: ['project', 'round', 'artifact'],
     },
     output: { schema: { type: 'object' }, render: jsonRender },
     async execute(args) {
+      const outRoot = resolveOutDir(args, legacyOutRoot)
       const project = validateProject(args.project)
       const round = validateRound(args.round)
       const filename = artifactFile(args.artifact)
@@ -212,7 +231,7 @@ export function apply(ctx, config = {}) {
     ctx.effect(() => systemPrompt.section({
       name: 'tool:acceptance',
       order: 121,
-      text: '交付验收工具桥：验收前先向用户分别询问两个目录——「交付物目录」（供应商交付）与「需求/合同目录」（甲方基线，可选），拿到绝对路径后调用 acceptance_run（只执行确定性层：解析/静态分析/补缺/轮次快照，事实包内联返回，绝不调用 LLM）；四类偏差、问题分级、业务画像、接手方案等语义判断由你基于事实包完成（可配合 read/grep 下钻交付物代码与文档取证）。术语与判定口径：验收结论为通过/打回/无法判定（无基线为建议通过/建议整改/无法判定）。复验轮次：对比事实包 changes 与 previous_issues 识别变更与修复状态。领域专项：车辆诊断（UDS）业务描述见插件工程 profiles/diagnostic/业务描述.md，相关交付物验收时应先读它并按其检查重点执行。',
+      text: '交付验收工具桥：验收前先向用户询问——「交付物目录」（供应商交付，必填）与「需求/合同目录」（甲方基线，可选），均用绝对路径；「产物目录」可选：缺省放交付物同级（<交付物父目录>\\acceptance），用户也可指定任意目录（out_dir，验收全程统一使用）。调用 acceptance_run（只执行确定性层：解析/静态分析/补缺/轮次快照，事实包内联返回，绝不调用 LLM）；四类偏差、问题分级、业务画像、接手方案等语义判断由你基于事实包完成（可配合 read/grep 下钻交付物代码与文档取证）。术语与判定口径：验收结论为通过/打回/无法判定（无基线为建议通过/建议整改/无法判定）。复验轮次：对比事实包 changes 与 previous_issues 识别变更与修复状态。领域专项：车辆诊断（UDS）业务描述见插件工程 profiles/diagnostic/业务描述.md，相关交付物验收时应先读它并按其检查重点执行。',
     }), 'prompt: acceptance guide')
   }
 }
