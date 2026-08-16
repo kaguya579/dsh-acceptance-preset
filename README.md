@@ -22,7 +22,10 @@ acceptance/
 ## 安装（落到本地）
 
 ```powershell
-git clone <本仓库> "${env:DSH_HOME:-$HOME/.dsh}/.agent-presets/acceptance"
+# GitCode（国内）：
+git clone https://gitcode.com/kaguya589/dsh-acceptance-preset.git "${env:DSH_HOME:-$HOME/.dsh}/.agent-presets/acceptance"
+# GitHub：
+git clone https://github.com/kaguya579/dsh-acceptance-preset.git "${env:DSH_HOME:-$HOME/.dsh}/.agent-presets/acceptance"
 ```
 
 重启 DSH（或新会话）后选择 `acceptance` preset 即可；新会话的 agent 将拥有 `acceptance_run` / `acceptance_list_rounds` / `acceptance_read` 三个工具。
