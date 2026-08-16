@@ -76,7 +76,8 @@ async function main() {
     roundInfo: { project: '冒烟项目', round: 1, round_type: '例行验收' },
     outDir: round1Dir,
   })
-  check(facts1.schema === 'acceptance-facts/1', 'schema 版本')
+  check(facts1.schema === 'acceptance-facts/2', 'schema 版本')
+  check(facts1.architecture_facts !== undefined, '事实包含架构事实节')
   check(facts1.parse.file_count === 3, `文件数 3（实际 ${facts1.parse.file_count}）`)
   check(facts1.parse.documents.length === 2, `文档 2 份（实际 ${facts1.parse.documents.length}）`)
   check(facts1.static_facts.languages.join(',') === 'C', `语言 C（实际 ${facts1.static_facts.languages}）`)
@@ -145,6 +146,68 @@ async function main() {
   })
   check(facts4.parse.file_count === 1, `仅 1 个合法条目（实际 ${facts4.parse.file_count}）`)
   check(!facts4.parse.paths.some((entry) => entry.includes('..')), '无穿越路径条目')
+
+  // ── 场景 5：架构事实 —— 依赖图 / 环 / 未解析引用（6 语言） ──
+  console.log('场景 5：arch-code 依赖图（6 语言跨文件引用 + 环 + 未解析）')
+  const facts5 = await runFacts({
+    adapter,
+    deliverable: path.join(FIXTURES, 'arch-code'),
+    baseline: null,
+    roundInfo: { project: '冒烟项目', round: 5, round_type: '例行验收' },
+    outDir: path.join(work, 'acceptance', '冒烟项目-轮次5'),
+  })
+  const arch5 = facts5.architecture_facts
+  check(facts5.schema === 'acceptance-facts/2', 'schema 版本 2')
+  const hasEdge = (from, to, kind) => arch5.dependencies.edges.some((edge) => edge.from === from && edge.to === to && edge.kind === kind)
+  check(hasEdge('c/main.c', 'c/util.h', 'include'), 'C include 依赖边')
+  check(hasEdge('cpp/main.cpp', 'cpp/helper.hpp', 'include'), 'C++ include 依赖边')
+  check(hasEdge('a/Main.java', 'b/Helper.java', 'import'), 'Java import 依赖边')
+  check(hasEdge('maven/src/main/java/cn/demo/Main.java', 'maven/src/main/java/cn/demo/Util.java', 'import'), 'Java Maven 布局后缀映射依赖边')
+  check(hasEdge('js/app.js', 'js/lib/util.js', 'require'), 'JS require 依赖边')
+  check(hasEdge('ts/app.ts', 'ts/lib/util.ts', 'import'), 'TS 扩展名推断依赖边')
+  check(hasEdge('tsx/App.tsx', 'tsx/Button.tsx', 'import'), 'TSX 扩展名推断依赖边')
+  check(arch5.dependencies.cycles.some((cycle) => cycle.includes('cycle/a.js') && cycle.includes('cycle/b.js')), '循环依赖环命中')
+  check(arch5.dependencies.unresolved.some((item) => item.file === 'tsx/Button.tsx' && item.ref === 'react'), '包名引用归未解析')
+
+  // ── 场景 6：复杂度度量超阈值清单（同一轮事实） ──
+  const overFuncs = arch5.metrics.over_threshold.functions
+  check(overFuncs.some((fn) => fn.name === 'long_func' && fn.lines > 80 && fn.reasons.some((reason) => reason.includes('函数行数'))), '超长函数命中（行数 > 80）')
+  check(overFuncs.some((fn) => fn.name === 'complex_func' && fn.complexity > 15 && fn.reasons.some((reason) => reason.includes('圈复杂度'))), '高复杂度函数命中（圈复杂度 > 15）')
+  check(arch5.metrics.distribution.function_count > 0, '函数度量分布存在')
+  check(arch5.metrics.thresholds.FUNCTION_LINES === 80 && arch5.metrics.thresholds.COMPLEXITY === 15, '阈值常量随事实输出')
+
+  // ── 场景 7：依赖清单（package.json / pom.xml / CMakeLists） ──
+  console.log('场景 7：arch-manifests 依赖清单')
+  const facts7 = await runFacts({
+    adapter,
+    deliverable: path.join(FIXTURES, 'arch-manifests'),
+    baseline: null,
+    roundInfo: { project: '冒烟项目', round: 7, round_type: '例行验收' },
+    outDir: path.join(work, 'acceptance', '冒烟项目-轮次7'),
+  })
+  const manifests7 = facts7.architecture_facts.manifests
+  check(manifests7.entries.some((entry) => entry.name === 'lodash' && entry.version === '^4.17.21' && entry.type === 'npm'), 'package.json 依赖条目')
+  check(manifests7.entries.some((entry) => entry.name === 'org.junit.jupiter:junit-jupiter' && entry.version === '5.10.2' && entry.type === 'maven'), 'pom.xml 依赖条目（属性展开）')
+  check(manifests7.entries.some((entry) => entry.name === 'com.google.guava:guava' && entry.version === ''), 'pom.xml 缺失版本留空')
+  check(manifests7.entries.some((entry) => entry.name === 'Threads' && entry.type === 'cmake-find_package'), 'CMake find_package 条目')
+  check(manifests7.heuristic === true, 'CMake 启发式标记')
+
+  // ── 场景 8：重复片段检测 ──
+  console.log('场景 8：arch-dupes 重复片段')
+  const facts8 = await runFacts({
+    adapter,
+    deliverable: path.join(FIXTURES, 'arch-dupes'),
+    baseline: null,
+    roundInfo: { project: '冒烟项目', round: 8, round_type: '例行验收' },
+    outDir: path.join(work, 'acceptance', '冒烟项目-轮次8'),
+  })
+  const dupes8 = facts8.architecture_facts.duplicates
+  check(dupes8.fragments.some((fragment) => fragment.lines >= 9 && fragment.occurrences.some((occurrence) => occurrence.path === 'a.js') && fragment.occurrences.some((occurrence) => occurrence.path === 'b.js')), '跨文件重复片段命中（≥9 行）')
+
+  // ── 场景 9：历史 /1 事实包仍可通用解析 ──
+  console.log('场景 9：历史 acceptance-facts/1 可读兼容')
+  const legacy = JSON.parse(await readFile(path.join(FIXTURES, 'facts-v1.json'), 'utf8'))
+  check(legacy.schema === 'acceptance-facts/1' && legacy.parse.file_count === 1, '历史 /1 事实包解析')
 
   await rm(work, { recursive: true, force: true })
   if (failures > 0) {

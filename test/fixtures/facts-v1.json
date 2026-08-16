@@ -1,0 +1,11 @@
+{
+  "schema": "acceptance-facts/1",
+  "round_info": { "project": "历史项目", "round": 1, "round_type": "例行验收" },
+  "has_baseline": false,
+  "parse": { "file_count": 1, "paths": ["code/main.c"], "documents": [], "images": [], "errors": [] },
+  "static_facts": { "languages": ["C"], "files": [], "errors": [] },
+  "baseline": { "required_count": 0, "required_items": [], "missing_count": 0, "missing_items": [] },
+  "changes": null,
+  "previous_issues": [],
+  "deterministic_issues": []
+}
