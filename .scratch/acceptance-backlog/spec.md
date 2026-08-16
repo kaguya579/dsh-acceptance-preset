@@ -15,6 +15,7 @@ Status: ready-for-agent
 | 05 | tar.gz 路径测试覆盖 | 中 |
 | 06 | 领域专项 agent 读取流程验证 | 中 |
 | 07 | tree-sitter-wasms 依赖裁剪 | 低 |
-| 08 | GitHub 远端推送补齐 | 低 |
+| 08 | GitHub 远端推送补齐 | 已解决 |
 | 09 | 迁移后旧轮次产物跨版本互读验证 | 低 |
 | 10 | 超大交付物内存压力测试 | 低 |
+| 11 | 静态注册工具 parameters 需完整 JSON Schema | 已解决 |
