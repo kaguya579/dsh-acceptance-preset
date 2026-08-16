@@ -1,6 +1,6 @@
 # DSH 交付验收 preset（acceptance）
 
-把[交付验收工具](https://gitcode.com/kaguya589/project-handover)桥接进 DeepSeek Harness（DSH）的 agent preset。设计理念：**工具只做确定性事实，语义判断全部由 agent 完成**——解析/静态分析/补缺识别/轮次快照由 Python facts 出口执行（绝不调用 LLM、绝不超时崩盘），四类偏差、问题分级、业务画像、接手方案、验收结论由 agent 基于事实包推理并取证。
+把**交付验收能力内建进 DeepSeek Harness（DSH）**的 agent preset。设计理念：**确定性事实在插件内完成，语义判断全部由 agent 完成**——安全解包、文档解析、tree-sitter 静态分析、补缺识别、轮次快照全部原生实现在插件内（纯 Node，无任何外部进程依赖），四类偏差、问题分级、业务画像、接手方案、验收结论由 agent 基于事实包推理并取证。
 
 ## 目录结构
 
@@ -8,7 +8,19 @@
 acceptance/
 ├── preset.yml                    # preset 显示元数据
 ├── agent.cordis.yml              # 组合文件（standard 为底 + tool-acceptance 行）
-├── plugins/acceptance-bridge.mjs # 插件本体（零依赖，随 preset 分发）
+├── package.json                  # npm 依赖（node_modules 不入库）
+├── plugins/
+│   └── acceptance.mjs            # 插件入口：acceptance_run/list_rounds/read 三个工具
+├── lib/
+│   ├── deliverable.mjs           # 目录/zip/tar.gz 安全扫描（防路径穿越 + 三重体积限制）
+│   ├── documents.mjs             # md/docx/pdf/xlsx 解析（mammoth/pdfjs/xlsx）
+│   ├── images.mjs                # PNG/JPEG/GIF/WebP 尺寸解析（零依赖头部解析）
+│   ├── static.mjs                # tree-sitter 六语言符号提取（web-tree-sitter WASM）
+│   ├── baseline.mjs              # 基线加载（JSON/md/docx）与确定性补缺识别
+│   ├── rounds.mjs                # 文件快照/变更识别/轮次记录
+│   └── facts.mjs                 # 编排：确定性事实.json + 静态事实.json + 轮次记录.json
+├── test/
+│   └── smoke.mjs                 # 冒烟测试（node test/smoke.mjs）
 ├── README.md
 └── LICENSE                       # Apache-2.0
 ```
@@ -16,8 +28,8 @@ acceptance/
 ## 前置依赖
 
 - DeepSeek Harness（DSH）
-- Python ≥ 3.12 + [交付验收工具](https://gitcode.com/kaguya589/project-handover)：`pip install -e .`（需含 `facts` 子命令，即 main 分支）
-- 验收工具默认使用项目内 `.venv` 的 python（可配置）
+- Node.js（harness 自带运行时）；**无 Python、无外部工具依赖**
+- npm 依赖安装：`npm install`（纯 JS/WASM 依赖，无原生编译）
 
 ## 安装（落到本地）
 
@@ -26,6 +38,9 @@ acceptance/
 git clone https://gitcode.com/kaguya589/dsh-acceptance-preset.git "${env:DSH_HOME:-$HOME/.dsh}/.agent-presets/acceptance"
 # GitHub：
 git clone https://github.com/kaguya579/dsh-acceptance-preset.git "${env:DSH_HOME:-$HOME/.dsh}/.agent-presets/acceptance"
+
+cd "${env:DSH_HOME:-$HOME/.dsh}/.agent-presets/acceptance"
+npm install
 ```
 
 重启 DSH（或新会话）后选择 `acceptance` preset 即可；新会话的 agent 将拥有 `acceptance_run` / `acceptance_list_rounds` / `acceptance_read` 三个工具。
@@ -36,14 +51,24 @@ git clone https://github.com/kaguya579/dsh-acceptance-preset.git "${env:DSH_HOME
 
 | 字段 | 含义 | 缺省 |
 |---|---|---|
-| `projectRoot` | 交付验收项目根目录（**必填**） | — |
-| `pythonPath` | python 解释器 | `<projectRoot>\.venv\Scripts\python.exe` |
+| `projectRoot` | 交付验收项目根目录（**必填**；交付物/基线的相对路径基准） | — |
 | `outDir` | 验收产物根目录 | `<projectRoot>\acceptance` |
-| `sandboxMode` | 验收子进程沙箱模式 | `danger-full-access` |
+
+## 能力清单（内建，无 LLM、无结论）
+
+- 交付物：目录 / zip / tar.gz；压缩包防路径穿越（拒绝对路径/盘符/`..`），单文件 64MB、总量 512MB、条目数 5 万三重上限；排除 `.git`/`node_modules`/`target` 等噪音目录
+- 文档：md / docx / pdf / xlsx 元数据（标题/章节/段落/表格）
+- 代码：tree-sitter 六语言（C/C++/Java/JavaScript/TypeScript/TSX）符号提取（函数/类/接口/方法 + 行号）
+- 基线：JSON 清单 / md 清单行 / docx 列表段，目录聚合；确定性补缺识别（规范化子串匹配，缺项带出处）
+- 轮次：文件 sha256 快照、变更识别（新增/修改/删除）、复验上轮问题清单
+- 产物：`确定性事实.json`（schema `acceptance-facts/1`）+ `静态事实.json` + `轮次记录.json`
+- 兼容性：事实包与轮次记录格式与[交付验收工具](https://gitcode.com/kaguya589/project-handover)的 facts 出口一致，历史轮次可互读
 
 ## 安全姿态
 
-`sandboxMode` 缺省为 `danger-full-access`：DSH Windows 沙箱下受限子进程无法写工作区（实测 Errno 13），而验收运行需要写产物目录与临时解包目录。验收工具自身保证：绝不执行交付代码、压缩包解包防路径穿越、写盘范围仅产物目录与临时目录。如你的部署不启用该沙箱，可改为 `workspace-write`。
+- 全程**无子进程**：解析在 harness 进程内完成，产物落盘走 harness `fs` 服务，遵守会话沙箱策略，不需要任何提权
+- 绝不执行交付代码；压缩包只解字节、不落盘、不执行
+- 大文件不载入解析（代码 >2MB、文档 >20MB 仅哈希不入内存解析）
 
 ## 使用
 
@@ -51,5 +76,6 @@ git clone https://github.com/kaguya579/dsh-acceptance-preset.git "${env:DSH_HOME
 
 ## 维护
 
-- 插件改动后 `git push`，本地 preset 目录 `git pull` 即生效（新会话生效）。
-- 验收工具侧改动见项目仓库的 `docs/` 与分支工作流。
+- 升级：本地 preset 目录 `git pull && npm install`（新会话生效）
+- 测试：`node test/smoke.mjs`（依赖交付验收工具仓库的 fixtures，见测试文件头部注释）
+- 改动走分支 + MR/PR，提交信息「英文前缀 + 中文描述」

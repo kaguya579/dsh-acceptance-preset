@@ -254,14 +254,14 @@
 # ── 交付验收 ────────────────────────────────────────────────────────────────
 
 # 交付验收工具桥：本 preset 自带插件文件（相对路径行，随 preset 一起分发）。
-# 插件只消费 host 的 shell/fs/tools/systemPrompt 注册表，不发布任何服务，
-# 因此无需 isolate realm。config 为机器相关路径，换机器/开源使用请按需修改。
+# 插件只消费 host 的 fs/tools/systemPrompt 注册表，不发布任何服务，
+# 因此无需 isolate realm。确定性验收能力内建在插件中（无外部进程依赖），
+# 产物落盘走 fs 服务，遵守会话沙箱策略。config 为机器相关路径，换机器/开源使用请按需修改。
+# 首次安装需在 preset 目录执行 npm install（依赖见 package.json，node_modules 不入库）。
 - id: tool-acceptance
-  name: ./plugins/acceptance-bridge.v3.mjs
+  name: ./plugins/acceptance.mjs
   config:
     projectRoot: 'D:\project\project-handover'
-    pythonPath: 'D:\project\project-handover\.venv\Scripts\python.exe'
     outDir: 'D:\project\project-handover\acceptance'
-    sandboxMode: danger-full-access
 
 

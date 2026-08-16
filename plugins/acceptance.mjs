@@ -1,23 +1,21 @@
-// 交付验收工具桥：把交付验收工具桥接为 DSH 模型工具（静态 preset 插件版）。
-// 职责边界：只做确定性事实——调用验收工具 facts 出口 + 读取轮次产物；
+// 交付验收工具桥（原生实现版）：确定性验收能力内建在本插件中，无任何外部进程依赖。
+// 职责边界：只做确定性事实（安全解包/文档解析/静态分析/补缺识别/轮次快照，事实包内联返回）；
 // 四类偏差、问题分级、业务画像、接手方案等语义判断由 agent 完成。
 // 配置来自 preset 组合行的 config 字段（见 agent.cordis.yml）：
-//   projectRoot —— 交付验收项目根目录（必填）
-//   pythonPath  —— python 解释器（缺省 <projectRoot>\.venv\Scripts\python.exe）
+//   projectRoot —— 交付验收项目根目录（必填；交付物/基线的相对路径基准）
 //   outDir      —— 验收产物根目录（缺省 <projectRoot>\acceptance）
-//   sandboxMode —— 验收子进程沙箱模式（缺省 danger-full-access，原因见 README「安全姿态」）
+// 产物落盘走 harness fs 服务（遵守会话沙箱策略），不再需要子进程提权。
 
-const ROUND_DIR_RE = /^(.*?)-轮次(\d+)$/
+import path from 'node:path'
+import { runFacts, FACTS_FILENAME, STATIC_FACTS_FILENAME } from '../lib/facts.mjs'
+import { loadRoundRecord, RECORD_FILENAME } from '../lib/rounds.mjs'
+
 const ARTIFACT_FILES = {
   report: '验收报告.md',
   issues: '问题清单.md',
-  facts: '确定性事实.json',
-  static_facts: '静态事实.json',
-  record: '轮次记录.json',
-}
-
-function pwshQuote(value) {
-  return "'" + String(value).replace(/'/g, "''") + "'"
+  facts: FACTS_FILENAME,
+  static_facts: STATIC_FACTS_FILENAME,
+  record: RECORD_FILENAME,
 }
 
 function normPath(value, root) {
@@ -55,31 +53,55 @@ function jsonRender(_args, value) {
   return [{ type: 'text', text: JSON.stringify(value, null, 2) }]
 }
 
+/** harness fs 服务 → lib 所需的适配器（全部绝对路径）。 */
+function harnessAdapter(fs) {
+  return {
+    async stat(absPath) {
+      const target = await fs.resolve(absPath)
+      const info = await fs.stat(target)
+      return info === undefined ? null : { type: info.type, size: info.size ?? 0 }
+    },
+    async readText(absPath) {
+      return fs.readText(await fs.resolve(absPath))
+    },
+    async readBytes(absPath, maxBytes) {
+      const target = await fs.resolve(absPath)
+      try {
+        return await fs.readBytes(target, undefined, maxBytes)
+      } catch (error) {
+        if (String(error?.code ?? '').includes('TOO_LARGE')) return null
+        throw error
+      }
+    },
+    async writeText(absPath, content) {
+      await fs.writeText(await fs.resolve(absPath), content)
+    },
+    async listDir(absPath) {
+      const entries = await fs.listDir(await fs.resolve(absPath))
+      return entries.map((entry) => ({ name: entry.name, type: entry.type, size: entry.size ?? 0 }))
+    },
+  }
+}
+
 export const name = 'acceptance-bridge'
 
 export function apply(ctx, config = {}) {
-  const shell = ctx.get('shell')
   const fs = ctx.get('fs')
   const tools = ctx.get('tools')
-  if (shell === undefined || fs === undefined || tools === undefined) return
+  if (fs === undefined || tools === undefined) return
   const root = String(config.projectRoot || '')
-  const python = String(config.pythonPath || (root === '' ? '' : root + '\\.venv\\Scripts\\python.exe'))
   const outRoot = String(config.outDir || (root === '' ? '' : root + '\\acceptance'))
-  const sandboxMode = String(config.sandboxMode || 'danger-full-access')
+  const adapter = harnessAdapter(fs)
 
   function requireConfig() {
-    if (root === '' || python === '' || outRoot === '') {
-      throw new Error('acceptance-bridge 未配置：请在 preset 组合行 tool-acceptance 的 config 中设置 projectRoot（必填）与可选的 pythonPath/outDir')
+    if (root === '') {
+      throw new Error('acceptance-bridge 未配置：请在 preset 组合行 tool-acceptance 的 config 中设置 projectRoot（必填）')
     }
-  }
-
-  function sandboxPolicy() {
-    return { mode: sandboxMode, workspaceRoot: root }
   }
 
   const runTool = {
     name: 'acceptance_run',
-    description: '对交付物执行一轮确定性验收分析（交付验收工具 facts 出口：安全解包、docx/pdf/md/xlsx 解析、tree-sitter 静态分析、补缺识别、轮次快照与变更识别；绝不调用 LLM、不产出报告与结论——四类偏差、问题分级、业务画像、接手方案等语义判断由 agent 基于返回的事实包完成）。大项目可能耗时数分钟。产物落盘 <outDir>/<项目>-轮次<N>/（确定性事实.json、静态事实.json、轮次记录.json），事实包同时内联在返回的 facts 字段。exitCode：0 成功、2 参数错误或运行错误。复验轮次（round_type=复验）自动识别变更并携带上轮问题清单（previous_issues），agent 应自行评估修复状态。',
+    description: '对交付物执行一轮确定性验收分析（内建实现：安全解包、docx/pdf/md/xlsx 解析、tree-sitter 静态分析、补缺识别、轮次快照与变更识别；绝不调用 LLM、不产出报告与结论——四类偏差、问题分级、业务画像、接手方案等语义判断由 agent 基于返回的事实包完成）。大项目可能耗时数分钟。产物落盘 <outDir>/<项目>-轮次<N>/（确定性事实.json、静态事实.json、轮次记录.json），事实包同时内联在返回的 facts 字段。复验轮次（round_type=复验）自动识别变更并携带上轮问题清单（previous_issues），agent 应自行评估修复状态。',
     parameters: {
       deliverable: { type: 'string', required: true, description: '交付物目录或压缩包（zip/tar.gz）；绝对路径或相对 projectRoot' },
       baseline: { type: 'string', description: '可选：基线文件或目录（JSON/md/docx）；不提供则跳过补缺识别' },
@@ -88,60 +110,34 @@ export function apply(ctx, config = {}) {
       round_type: { type: 'string', enum: ['例行验收', '复验'], description: '轮次类型；复验会基于上一轮轮次记录做变更识别' },
     },
     output: { schema: { type: 'object' }, render: jsonRender },
-    timeoutMs: 900000,
-    async execute(args, exec) {
+    timeoutMs: 600000,
+    async execute(args) {
       requireConfig()
       const deliverable = normPath(args.deliverable, root)
       if (deliverable === null) throw new Error('deliverable 必填')
       const project = validateProject(args.project)
       const round = validateRound(args.round)
       const roundType = args.round_type === '复验' ? '复验' : '例行验收'
-      const roundDir = outRoot + '\\' + project + '-轮次' + round
-      const argv = [
-        python, '-m', 'acceptance', 'facts',
-        '--deliverable', deliverable,
-        '--project', project,
-        '--round', String(round),
-        '--round-type', roundType,
-        '--out', roundDir,
-      ]
+      const roundDir = path.join(outRoot, `${project}-轮次${round}`)
+      let baseline = null
       if (typeof args.baseline === 'string' && args.baseline.trim() !== '') {
-        const baseline = normPath(args.baseline, root)
+        baseline = normPath(args.baseline, root)
         if (baseline === null) throw new Error('baseline 路径无效')
-        argv.push('--baseline', baseline)
       }
-      const request = {
-        command: '& ' + argv.map(pwshQuote).join(' '),
-        workdir: root,
-        timeoutMs: 840000,
-        stdoutMaxBytes: 262144,
-        env: { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
-        sandboxPolicy: sandboxPolicy(),
-      }
-      const result = await shell.run(shell.resolve(request))
-      const stdoutText = result.stdout.text
-      const stderrText = result.stderr.text
-      const response = {
-        ok: result.exitCode === 0,
-        exitCode: result.exitCode,
-        timedOut: result.timedOut,
-        aborted: result.aborted,
-        stdout: stdoutText.slice(-4000),
-        stderr: stderrText.slice(-4000),
-        stdoutTruncated: result.stdout.truncated,
-        stderrTruncated: result.stderr.truncated,
+      const startedAt = Date.now()
+      const facts = await runFacts({
+        adapter,
+        deliverable,
+        baseline,
+        roundInfo: { project, round, round_type: roundType },
+        outDir: roundDir,
+      })
+      return {
+        ok: true,
         output_dir: roundDir,
+        duration_ms: Date.now() - startedAt,
+        facts,
       }
-      if (result.exitCode !== 0) return response
-      let facts = null
-      let factsError = null
-      try {
-        const target = await fs.resolve(roundDir + '\\确定性事实.json')
-        facts = JSON.parse(await fs.readText(target))
-      } catch (error) {
-        factsError = String(error)
-      }
-      return { ...response, facts, facts_error: factsError }
     },
   }
   ctx.effect(() => tools.register(runTool), 'tool: acceptance_run')
@@ -153,24 +149,23 @@ export function apply(ctx, config = {}) {
       project: { type: 'string', description: '可选：只列指定项目的轮次' },
     },
     output: { schema: { type: 'object' }, render: jsonRender },
-    async execute(args, exec) {
+    async execute(args) {
       requireConfig()
-      const rootTarget = await fs.resolve(outRoot)
-      if ((await fs.stat(rootTarget)) === undefined) {
+      if ((await adapter.stat(outRoot)) === null) {
         return { rounds: [], note: '验收产物根目录尚不存在（还没有任何验收轮次）' }
       }
       const filter = typeof args.project === 'string' ? args.project.trim() : ''
       const rounds = []
-      for (const entry of await fs.listDir(rootTarget)) {
+      for (const entry of await adapter.listDir(outRoot)) {
         if (entry.type !== 'directory') continue
-        const match = ROUND_DIR_RE.exec(entry.name)
+        const match = /^(.*?)-轮次(\d+)$/.exec(entry.name)
         if (match === null) continue
         const project = match[1]
         const round = Number(match[2])
         if (filter !== '' && project !== filter) continue
         const files = []
-        for (const child of await fs.listDir(entry.target)) {
-          files.push({ name: child.name, type: child.type, size: child.size === undefined ? null : child.size })
+        for (const child of await adapter.listDir(path.join(outRoot, entry.name))) {
+          files.push({ name: child.name, type: child.type, size: child.size })
         }
         rounds.push({ project, round, dir: entry.name, files })
       }
@@ -188,16 +183,15 @@ export function apply(ctx, config = {}) {
       artifact: { type: 'string', required: true, enum: ['report', 'issues', 'facts', 'static_facts', 'record'], description: '产物类型' },
     },
     output: { schema: { type: 'object' }, render: jsonRender },
-    async execute(args, exec) {
+    async execute(args) {
       requireConfig()
       const project = validateProject(args.project)
       const round = validateRound(args.round)
       const filename = artifactFile(args.artifact)
-      const path = outRoot + '\\' + project + '-轮次' + round + '\\' + filename
-      const target = await fs.resolve(path)
-      const text = await fs.readText(target)
+      const filePath = path.join(outRoot, `${project}-轮次${round}`, filename)
+      const text = await adapter.readText(filePath)
       if (args.artifact === 'report' || args.artifact === 'issues') {
-        return { path, text }
+        return { path: filePath, text }
       }
       let json = null
       let parseError = null
@@ -206,7 +200,7 @@ export function apply(ctx, config = {}) {
       } catch (error) {
         parseError = String(error)
       }
-      return { path, json, parse_error: parseError }
+      return { path: filePath, json, parse_error: parseError }
     },
   }
   ctx.effect(() => tools.register(readTool), 'tool: acceptance_read')
@@ -216,7 +210,7 @@ export function apply(ctx, config = {}) {
     ctx.effect(() => systemPrompt.section({
       name: 'tool:acceptance',
       order: 121,
-      text: '交付验收工具桥：acceptance_run 只执行确定性层（解析/静态分析/补缺/轮次快照，事实包内联返回），绝不调用工具自带 LLM；四类偏差、问题分级、业务画像、接手方案等语义判断由你基于事实包完成（可配合 read/grep 下钻交付物代码与文档取证）。术语与判定口径见交付验收项目 CONTEXT.md：验收结论为通过/打回/无法判定（无基线为建议通过/建议整改/无法判定）。复验轮次：对比事实包 changes 与 previous_issues 识别变更与修复状态。领域专项：车辆诊断（UDS）业务描述见 src/acceptance/profiles/diagnostic/业务描述.md，相关交付物验收时应先读它并按其检查重点执行。',
+      text: '交付验收工具桥：acceptance_run 只执行确定性层（解析/静态分析/补缺/轮次快照，事实包内联返回），绝不调用 LLM；四类偏差、问题分级、业务画像、接手方案等语义判断由你基于事实包完成（可配合 read/grep 下钻交付物代码与文档取证）。术语与判定口径见交付验收项目 CONTEXT.md：验收结论为通过/打回/无法判定（无基线为建议通过/建议整改/无法判定）。复验轮次：对比事实包 changes 与 previous_issues 识别变更与修复状态。领域专项：车辆诊断（UDS）业务描述见 src/acceptance/profiles/diagnostic/业务描述.md，相关交付物验收时应先读它并按其检查重点执行。',
     }), 'prompt: acceptance guide')
   }
 }

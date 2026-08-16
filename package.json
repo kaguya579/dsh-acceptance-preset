@@ -1,0 +1,16 @@
+{
+  "name": "dsh-acceptance-preset",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH 交付验收 preset：确定性验收能力内建（安全解包/文档解析/静态分析/补缺识别/轮次快照），语义判断由 agent 完成",
+  "dependencies": {
+    "fflate": "^0.8.2",
+    "mammoth": "^1.8.0",
+    "pdfjs-dist": "^4.10.38",
+    "tar-stream": "^3.1.7",
+    "tree-sitter-wasms": "^0.1.13",
+    "web-tree-sitter": "^0.25.2",
+    "xlsx": "^0.18.5"
+  }
+}
