@@ -97,11 +97,15 @@ export function apply(ctx, config = {}) {
     name: 'acceptance_run',
     description: '对交付物执行一轮确定性验收分析（内建实现：安全解包、docx/pdf/md/xlsx 解析、tree-sitter 静态分析、补缺识别、轮次快照与变更识别；绝不调用 LLM、不产出报告与结论——四类偏差、问题分级、业务画像、接手方案等语义判断由 agent 基于返回的事实包完成）。验收前先向用户分别询问两个目录：「交付物目录」（供应商交付）与「需求/合同目录」（甲方基线，可选），均用绝对路径。大项目可能耗时数分钟。产物落盘 插件工程/acceptance/<项目>-轮次<N>/（确定性事实.json、静态事实.json、轮次记录.json），事实包同时内联在返回的 facts 字段。复验轮次（round_type=复验）自动识别变更并携带上轮问题清单（previous_issues），agent 应自行评估修复状态。',
     parameters: {
-      deliverable: { type: 'string', required: true, description: '交付物目录或压缩包（zip/tar.gz）的绝对路径（由用户提供）' },
-      baseline: { type: 'string', description: '可选：基线（需求/合同）文件或目录（JSON/md/docx）的绝对路径；不提供则跳过补缺识别' },
-      project: { type: 'string', required: true, description: '项目名称（字母、数字、中文、连字符；不含路径分隔符与引号）' },
-      round: { type: 'number', required: true, description: '验收轮次（正整数）；同项目同轮次号会覆盖该轮产物' },
-      round_type: { type: 'string', enum: ['例行验收', '复验'], description: '轮次类型；复验会基于上一轮轮次记录做变更识别' },
+      type: 'object',
+      properties: {
+        deliverable: { type: 'string', description: '交付物目录或压缩包（zip/tar.gz）的绝对路径（由用户提供）' },
+        baseline: { type: 'string', description: '可选：基线（需求/合同）文件或目录（JSON/md/docx）的绝对路径；不提供则跳过补缺识别' },
+        project: { type: 'string', description: '项目名称（字母、数字、中文、连字符；不含路径分隔符与引号）' },
+        round: { type: 'number', description: '验收轮次（正整数）；同项目同轮次号会覆盖该轮产物' },
+        round_type: { type: 'string', enum: ['例行验收', '复验'], description: '轮次类型；复验会基于上一轮轮次记录做变更识别' },
+      },
+      required: ['deliverable', 'project', 'round'],
     },
     output: { schema: { type: 'object' }, render: jsonRender },
     timeoutMs: 600000,
@@ -139,7 +143,10 @@ export function apply(ctx, config = {}) {
     name: 'acceptance_list_rounds',
     description: '列出验收产物根目录下已完成的验收轮次（项目、轮次号与各轮产物文件清单），供复验与跨轮对比使用。',
     parameters: {
-      project: { type: 'string', description: '可选：只列指定项目的轮次' },
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: '可选：只列指定项目的轮次' },
+      },
     },
     output: { schema: { type: 'object' }, render: jsonRender },
     async execute(args) {
@@ -170,9 +177,13 @@ export function apply(ctx, config = {}) {
     name: 'acceptance_read',
     description: '读取某项目某轮次的验收产物：report=验收报告.md、issues=问题清单.md（旧版 pipeline 产物）；facts=确定性事实.json（facts 出口的结构化事实包）、static_facts=静态事实.json、record=轮次记录.json（文件 sha256 快照与上轮问题，复验修复状态的基础）。JSON 产物返回解析后的对象，report/issues 返回 markdown 全文。',
     parameters: {
-      project: { type: 'string', required: true, description: '项目名称' },
-      round: { type: 'number', required: true, description: '轮次（正整数）' },
-      artifact: { type: 'string', required: true, enum: ['report', 'issues', 'facts', 'static_facts', 'record'], description: '产物类型' },
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: '项目名称' },
+        round: { type: 'number', description: '轮次（正整数）' },
+        artifact: { type: 'string', enum: ['report', 'issues', 'facts', 'static_facts', 'record'], description: '产物类型' },
+      },
+      required: ['project', 'round', 'artifact'],
     },
     output: { schema: { type: 'object' }, render: jsonRender },
     async execute(args) {
