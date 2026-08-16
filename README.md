@@ -19,6 +19,9 @@ acceptance/
 │   ├── baseline.mjs              # 基线加载（JSON/md/docx）与确定性补缺识别
 │   ├── rounds.mjs                # 文件快照/变更识别/轮次记录
 │   └── facts.mjs                 # 编排：确定性事实.json + 静态事实.json + 轮次记录.json
+├── profiles/
+│   └── diagnostic/业务描述.md    # 车辆诊断（UDS）领域专项业务描述，agent 验收时读取
+├── acceptance/                   # 验收产物根（缺省；不入库，见 .gitignore）
 ├── test/
 │   └── smoke.mjs                 # 冒烟测试（node test/smoke.mjs）
 ├── README.md
@@ -47,12 +50,16 @@ npm install
 
 ## 配置
 
-编辑 `agent.cordis.yml` 中 `tool-acceptance` 行的 `config`：
+**无需任何必填配置**。路径语义：交付物目录与需求/合同目录是两个独立来源，验收时由用户分别提供（绝对路径）；验收产物写入插件工程根下的 `acceptance/`。
 
-| 字段 | 含义 | 缺省 |
-|---|---|---|
-| `projectRoot` | 交付验收项目根目录（**必填**；交付物/基线的相对路径基准） | — |
-| `outDir` | 验收产物根目录 | `<projectRoot>\acceptance` |
+`agent.cordis.yml` 中 `tool-acceptance` 行可选的 `config.outDir` 覆盖产物根目录：
+
+```yaml
+- id: tool-acceptance
+  name: ./plugins/acceptance.mjs
+  config:
+    outDir: 'D:\somewhere\acceptance'
+```
 
 ## 能力清单（内建，无 LLM、无结论）
 
@@ -72,7 +79,7 @@ npm install
 
 ## 使用
 
-在 acceptance preset 会话中直接用中文对话：`验收 D:\交付\xxx.zip，项目 xxx，第 1 轮`；复验用 `第 2 轮复验`；出整改清单用 `生成给供应商的整改清单`。
+在 acceptance preset 会话中直接用中文对话：`验收 xxx 的交付物，第 1 轮`——agent 会分别向你询问**交付物目录**（供应商交付）与**需求/合同目录**（甲方基线，可选）两个绝对路径；复验用 `第 2 轮复验`；出整改清单用 `生成给供应商的整改清单`；车端诊断类交付物会按 `profiles/diagnostic/业务描述.md` 的检查重点执行。
 
 ## 维护
 

@@ -1,6 +1,6 @@
 // 冒烟测试：用 node:fs 适配器跑通原生实现的全链路（目录/zip 交付物、基线补缺、
 // 静态分析、轮次与变更识别、产物落盘）。运行：node test/smoke.mjs
-// 依赖交付验收项目仓库的 fixtures（D:\project\project-handover\tests\fixtures）。
+// fixtures 随本仓库分发（test/fixtures/），无外部依赖。
 
 import { mkdtemp, mkdir, readFile, writeFile, rm, readdir, stat, copyFile, cp } from 'node:fs/promises'
 import path from 'node:path'
@@ -9,8 +9,8 @@ import { fileURLToPath } from 'node:url'
 import { runFacts, FACTS_FILENAME, STATIC_FACTS_FILENAME } from '../lib/facts.mjs'
 import { RECORD_FILENAME } from '../lib/rounds.mjs'
 
-const FIXTURES = 'D:\\project\\project-handover\\tests\\fixtures'
 const here = path.dirname(fileURLToPath(import.meta.url))
+const FIXTURES = path.join(here, 'fixtures')
 
 function nodeAdapter(root) {
   return {

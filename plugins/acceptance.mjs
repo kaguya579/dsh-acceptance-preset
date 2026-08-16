@@ -1,12 +1,12 @@
 // 交付验收工具桥（原生实现版）：确定性验收能力内建在本插件中，无任何外部进程依赖。
 // 职责边界：只做确定性事实（安全解包/文档解析/静态分析/补缺识别/轮次快照，事实包内联返回）；
 // 四类偏差、问题分级、业务画像、接手方案等语义判断由 agent 完成。
-// 配置来自 preset 组合行的 config 字段（见 agent.cordis.yml）：
-//   projectRoot —— 交付验收项目根目录（必填；交付物/基线的相对路径基准）
-//   outDir      —— 验收产物根目录（缺省 <projectRoot>\acceptance）
-// 产物落盘走 harness fs 服务（遵守会话沙箱策略），不再需要子进程提权。
+// 路径语义：交付物目录与需求/合同目录是两个独立来源，验收时由用户分别提供（绝对路径）；
+// 产物根目录缺省为插件工程根/acceptance（可用 config.outDir 覆盖）。
+// 产物落盘走 harness fs 服务（遵守会话沙箱策略），不需要任何提权。
 
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { runFacts, FACTS_FILENAME, STATIC_FACTS_FILENAME } from '../lib/facts.mjs'
 import { loadRoundRecord, RECORD_FILENAME } from '../lib/rounds.mjs'
 
@@ -18,14 +18,14 @@ const ARTIFACT_FILES = {
   record: RECORD_FILENAME,
 }
 
-function normPath(value, root) {
+function normPath(value) {
   let text = String(value).trim()
   if (text.length >= 2 && ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'")))) {
     text = text.slice(1, -1).trim()
   }
   if (text.length === 0) return null
   if (!/^[a-zA-Z]:[\\/]/.test(text) && !text.startsWith('\\\\')) {
-    text = root + '\\' + text.replace(/[\\/]/g, '\\')
+    throw new Error('请提供绝对路径：交付物目录与需求/合同目录由用户分别提供')
   }
   return text
 }
@@ -89,22 +89,16 @@ export function apply(ctx, config = {}) {
   const fs = ctx.get('fs')
   const tools = ctx.get('tools')
   if (fs === undefined || tools === undefined) return
-  const root = String(config.projectRoot || '')
-  const outRoot = String(config.outDir || (root === '' ? '' : root + '\\acceptance'))
+  const presetRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url))) // 插件工程根
+  const outRoot = String(config.outDir || path.join(presetRoot, 'acceptance'))
   const adapter = harnessAdapter(fs)
-
-  function requireConfig() {
-    if (root === '') {
-      throw new Error('acceptance-bridge 未配置：请在 preset 组合行 tool-acceptance 的 config 中设置 projectRoot（必填）')
-    }
-  }
 
   const runTool = {
     name: 'acceptance_run',
-    description: '对交付物执行一轮确定性验收分析（内建实现：安全解包、docx/pdf/md/xlsx 解析、tree-sitter 静态分析、补缺识别、轮次快照与变更识别；绝不调用 LLM、不产出报告与结论——四类偏差、问题分级、业务画像、接手方案等语义判断由 agent 基于返回的事实包完成）。大项目可能耗时数分钟。产物落盘 <outDir>/<项目>-轮次<N>/（确定性事实.json、静态事实.json、轮次记录.json），事实包同时内联在返回的 facts 字段。复验轮次（round_type=复验）自动识别变更并携带上轮问题清单（previous_issues），agent 应自行评估修复状态。',
+    description: '对交付物执行一轮确定性验收分析（内建实现：安全解包、docx/pdf/md/xlsx 解析、tree-sitter 静态分析、补缺识别、轮次快照与变更识别；绝不调用 LLM、不产出报告与结论——四类偏差、问题分级、业务画像、接手方案等语义判断由 agent 基于返回的事实包完成）。验收前先向用户分别询问两个目录：「交付物目录」（供应商交付）与「需求/合同目录」（甲方基线，可选），均用绝对路径。大项目可能耗时数分钟。产物落盘 插件工程/acceptance/<项目>-轮次<N>/（确定性事实.json、静态事实.json、轮次记录.json），事实包同时内联在返回的 facts 字段。复验轮次（round_type=复验）自动识别变更并携带上轮问题清单（previous_issues），agent 应自行评估修复状态。',
     parameters: {
-      deliverable: { type: 'string', required: true, description: '交付物目录或压缩包（zip/tar.gz）；绝对路径或相对 projectRoot' },
-      baseline: { type: 'string', description: '可选：基线文件或目录（JSON/md/docx）；不提供则跳过补缺识别' },
+      deliverable: { type: 'string', required: true, description: '交付物目录或压缩包（zip/tar.gz）的绝对路径（由用户提供）' },
+      baseline: { type: 'string', description: '可选：基线（需求/合同）文件或目录（JSON/md/docx）的绝对路径；不提供则跳过补缺识别' },
       project: { type: 'string', required: true, description: '项目名称（字母、数字、中文、连字符；不含路径分隔符与引号）' },
       round: { type: 'number', required: true, description: '验收轮次（正整数）；同项目同轮次号会覆盖该轮产物' },
       round_type: { type: 'string', enum: ['例行验收', '复验'], description: '轮次类型；复验会基于上一轮轮次记录做变更识别' },
@@ -112,8 +106,7 @@ export function apply(ctx, config = {}) {
     output: { schema: { type: 'object' }, render: jsonRender },
     timeoutMs: 600000,
     async execute(args) {
-      requireConfig()
-      const deliverable = normPath(args.deliverable, root)
+      const deliverable = normPath(args.deliverable)
       if (deliverable === null) throw new Error('deliverable 必填')
       const project = validateProject(args.project)
       const round = validateRound(args.round)
@@ -121,7 +114,7 @@ export function apply(ctx, config = {}) {
       const roundDir = path.join(outRoot, `${project}-轮次${round}`)
       let baseline = null
       if (typeof args.baseline === 'string' && args.baseline.trim() !== '') {
-        baseline = normPath(args.baseline, root)
+        baseline = normPath(args.baseline)
         if (baseline === null) throw new Error('baseline 路径无效')
       }
       const startedAt = Date.now()
@@ -150,7 +143,6 @@ export function apply(ctx, config = {}) {
     },
     output: { schema: { type: 'object' }, render: jsonRender },
     async execute(args) {
-      requireConfig()
       if ((await adapter.stat(outRoot)) === null) {
         return { rounds: [], note: '验收产物根目录尚不存在（还没有任何验收轮次）' }
       }
@@ -184,7 +176,6 @@ export function apply(ctx, config = {}) {
     },
     output: { schema: { type: 'object' }, render: jsonRender },
     async execute(args) {
-      requireConfig()
       const project = validateProject(args.project)
       const round = validateRound(args.round)
       const filename = artifactFile(args.artifact)
@@ -210,7 +201,7 @@ export function apply(ctx, config = {}) {
     ctx.effect(() => systemPrompt.section({
       name: 'tool:acceptance',
       order: 121,
-      text: '交付验收工具桥：acceptance_run 只执行确定性层（解析/静态分析/补缺/轮次快照，事实包内联返回），绝不调用 LLM；四类偏差、问题分级、业务画像、接手方案等语义判断由你基于事实包完成（可配合 read/grep 下钻交付物代码与文档取证）。术语与判定口径见交付验收项目 CONTEXT.md：验收结论为通过/打回/无法判定（无基线为建议通过/建议整改/无法判定）。复验轮次：对比事实包 changes 与 previous_issues 识别变更与修复状态。领域专项：车辆诊断（UDS）业务描述见 src/acceptance/profiles/diagnostic/业务描述.md，相关交付物验收时应先读它并按其检查重点执行。',
+      text: '交付验收工具桥：验收前先向用户分别询问两个目录——「交付物目录」（供应商交付）与「需求/合同目录」（甲方基线，可选），拿到绝对路径后调用 acceptance_run（只执行确定性层：解析/静态分析/补缺/轮次快照，事实包内联返回，绝不调用 LLM）；四类偏差、问题分级、业务画像、接手方案等语义判断由你基于事实包完成（可配合 read/grep 下钻交付物代码与文档取证）。术语与判定口径：验收结论为通过/打回/无法判定（无基线为建议通过/建议整改/无法判定）。复验轮次：对比事实包 changes 与 previous_issues 识别变更与修复状态。领域专项：车辆诊断（UDS）业务描述见插件工程 profiles/diagnostic/业务描述.md，相关交付物验收时应先读它并按其检查重点执行。',
     }), 'prompt: acceptance guide')
   }
 }
