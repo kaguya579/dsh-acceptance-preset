@@ -257,9 +257,10 @@
 # 插件只消费 host 的 shell/fs/tools/systemPrompt 注册表，不发布任何服务，
 # 因此无需 isolate realm。config 为机器相关路径，换机器/开源使用请按需修改。
 - id: tool-acceptance
-  name: ./plugins/acceptance-bridge.mjs
+  name: ./plugins/acceptance-bridge.v2.mjs
   config:
     projectRoot: 'D:\project\project-handover'
     pythonPath: 'D:\project\project-handover\.venv\Scripts\python.exe'
     outDir: 'D:\project\project-handover\acceptance'
     sandboxMode: danger-full-access
+
