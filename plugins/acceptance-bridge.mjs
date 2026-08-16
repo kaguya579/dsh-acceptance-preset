@@ -57,12 +57,11 @@ function jsonRender(_args, value) {
 
 export const name = 'acceptance-bridge'
 
-export function apply(ctx) {
+export function apply(ctx, config = {}) {
   const shell = ctx.get('shell')
   const fs = ctx.get('fs')
   const tools = ctx.get('tools')
   if (shell === undefined || fs === undefined || tools === undefined) return
-  const config = ctx.config || {}
   const root = String(config.projectRoot || '')
   const python = String(config.pythonPath || (root === '' ? '' : root + '\\.venv\\Scripts\\python.exe'))
   const outRoot = String(config.outDir || (root === '' ? '' : root + '\\acceptance'))
