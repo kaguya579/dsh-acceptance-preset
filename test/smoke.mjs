@@ -74,7 +74,7 @@ async function main() {
     deliverable: path.join(FIXTURES, 'sample-delivery'),
     baseline: path.join(FIXTURES, 'baseline.json'),
     roundInfo: { project: '冒烟项目', round: 1, round_type: '例行验收' },
-    outDir: round1Dir,
+    outRoot: path.join(work, 'acceptance'),
   })
   check(facts1.schema === 'acceptance-facts/2', 'schema 版本')
   check(facts1.architecture_facts !== undefined, '事实包含架构事实节')
@@ -101,7 +101,7 @@ async function main() {
     deliverable: v2,
     baseline: path.join(FIXTURES, 'baseline-with-missing.json'),
     roundInfo: { project: '冒烟项目', round: 2, round_type: '复验' },
-    outDir: path.join(work, 'acceptance', '冒烟项目-轮次2'),
+    outRoot: path.join(work, 'acceptance'),
   })
   check(JSON.stringify(facts2.changes.modified) === JSON.stringify(['code/main.c']), `变更-修改（实际 ${JSON.stringify(facts2.changes.modified)}）`)
   check(JSON.stringify(facts2.changes.added) === JSON.stringify(['docs/新增.md']), `变更-新增（实际 ${JSON.stringify(facts2.changes.added)}）`)
@@ -127,7 +127,7 @@ async function main() {
     deliverable: zipPath,
     baseline: path.join(FIXTURES, 'baseline.json'),
     roundInfo: { project: '冒烟项目', round: 3, round_type: '例行验收' },
-    outDir: path.join(work, 'acceptance', '冒烟项目-轮次3'),
+    outRoot: path.join(work, 'acceptance'),
   })
   check(facts3.parse.file_count === facts1.parse.file_count, `zip 与目录文件数一致（${facts3.parse.file_count}）`)
   check(facts3.static_facts.files.length === facts1.static_facts.files.length, 'zip 与目录静态分析一致')
@@ -142,7 +142,7 @@ async function main() {
     deliverable: evilPath,
     baseline: null,
     roundInfo: { project: '冒烟项目', round: 4, round_type: '例行验收' },
-    outDir: path.join(work, 'acceptance', '冒烟项目-轮次4'),
+    outRoot: path.join(work, 'acceptance'),
   })
   check(facts4.parse.file_count === 1, `仅 1 个合法条目（实际 ${facts4.parse.file_count}）`)
   check(!facts4.parse.paths.some((entry) => entry.includes('..')), '无穿越路径条目')
@@ -154,7 +154,7 @@ async function main() {
     deliverable: path.join(FIXTURES, 'arch-code'),
     baseline: null,
     roundInfo: { project: '冒烟项目', round: 5, round_type: '例行验收' },
-    outDir: path.join(work, 'acceptance', '冒烟项目-轮次5'),
+    outRoot: path.join(work, 'acceptance'),
   })
   const arch5 = facts5.architecture_facts
   check(facts5.schema === 'acceptance-facts/2', 'schema 版本 2')
@@ -200,7 +200,7 @@ async function main() {
     deliverable: path.join(FIXTURES, 'arch-manifests'),
     baseline: null,
     roundInfo: { project: '冒烟项目', round: 7, round_type: '例行验收' },
-    outDir: path.join(work, 'acceptance', '冒烟项目-轮次7'),
+    outRoot: path.join(work, 'acceptance'),
   })
   const manifests7 = facts7.architecture_facts.manifests
   check(manifests7.entries.some((entry) => entry.name === 'lodash' && entry.version === '^4.17.21' && entry.type === 'npm'), 'package.json 依赖条目')
@@ -216,7 +216,7 @@ async function main() {
     deliverable: path.join(FIXTURES, 'arch-dupes'),
     baseline: null,
     roundInfo: { project: '冒烟项目', round: 8, round_type: '例行验收' },
-    outDir: path.join(work, 'acceptance', '冒烟项目-轮次8'),
+    outRoot: path.join(work, 'acceptance'),
   })
   const dupes8 = facts8.architecture_facts.duplicates
   check(dupes8.fragments.some((fragment) => fragment.lines >= 9 && fragment.occurrences.some((occurrence) => occurrence.path === 'a.js') && fragment.occurrences.some((occurrence) => occurrence.path === 'b.js')), '跨文件重复片段命中（≥9 行）')
@@ -238,7 +238,7 @@ async function main() {
     deliverable: polluted,
     baseline: null,
     roundInfo: { project: '冒烟项目', round: 10, round_type: '例行验收' },
-    outDir: path.join(polluted, 'acceptance', '冒烟项目-轮次10'),
+    outRoot: path.join(polluted, 'acceptance'),
   })
   check(facts10.parse.file_count === 3, `排除产物目录后文件数 3（实际 ${facts10.parse.file_count}）`)
   check(!facts10.parse.paths.some((entry) => entry.startsWith('acceptance/')), '产物目录子树被排除')
@@ -250,7 +250,7 @@ async function main() {
     deliverable: path.join(FIXTURES, 'arch-code'),
     baseline: null,
     roundInfo: { project: '漂移项目', round: 1, round_type: '例行验收' },
-    outDir: path.join(work, 'acceptance', '漂移项目-轮次1'),
+    outRoot: path.join(work, 'acceptance'),
   })
   check(facts11a.architecture_delta === null, '首轮 delta 为 null')
   check(String(facts11a.architecture_delta_note).includes('首轮'), '首轮 delta note 说明')
@@ -264,7 +264,7 @@ async function main() {
     deliverable: archCopy,
     baseline: null,
     roundInfo: { project: '漂移项目', round: 2, round_type: '复验' },
-    outDir: path.join(work, 'acceptance', '漂移项目-轮次2'),
+    outRoot: path.join(work, 'acceptance'),
   })
   check(facts11b.architecture_delta !== null, '复验轮次产生 delta')
   check(facts11b.architecture_delta.edges_added.some((edge) => edge.from === 'ts/app.ts' && edge.to === 'ts/lib/extra.ts' && edge.kind === 'import'), 'delta 新增边命中')
@@ -288,7 +288,7 @@ async function main() {
     deliverable: path.join(FIXTURES, 'arch-code'),
     baseline: null,
     roundInfo: { project: '冒烟项目', round: 12, round_type: '例行验收' },
-    outDir: path.join(work, 'acceptance', '冒烟项目-轮次12'),
+    outRoot: path.join(work, 'acceptance'),
     layerRules: layeringRules,
   })
   const layering12 = facts12.architecture_facts.layering
@@ -320,6 +320,35 @@ async function main() {
   check(ledger.projects.some((project) => project.rounds.some((row) => row.changes !== null)), '台账行含相对上轮变更摘要')
   check(ledger.trend.length >= 4, '台账含跨项目趋势表（≥4 行）')
   check(ledger.total_rounds >= 4, '台账跨项目轮次合计（≥4）')
+
+  // ── 场景 15：引用分类矩阵直测（classifyRef 纯函数） ──
+  console.log('场景 15：引用分类矩阵（classifyRef）')
+  const { classifyRef } = await import('../lib/deps.mjs')
+  const cases = [
+    [{ kind: 'include', local: true }, 'local_include'],
+    [{ kind: 'include', local: false }, 'system_include'],
+    [{ kind: 'import', ref: 'cn.foo.*' }, 'wildcard'],
+    [{ kind: 'import', ref: 'static java.util.List' }, 'static'],
+    [{ kind: 'import', ref: './lib/util' }, 'relative'],
+    [{ kind: 'require', ref: '../x.js' }, 'relative'],
+    [{ kind: 'import', ref: 'react' }, 'external'],
+    [{ kind: 'reexport', ref: '@scope/pkg' }, 'external'],
+  ]
+  for (const [ref, expected] of cases) {
+    check(classifyRef(ref) === expected, `classifyRef ${JSON.stringify(ref)} → ${expected}（实际 ${classifyRef(ref)}）`)
+  }
+
+  // ── 场景 16：轮次记录写入/读取对称校验（非法枚举丢弃） ──
+  console.log('场景 16：轮次记录对称校验')
+  const { writeRoundRecord, loadRoundRecord } = await import('../lib/rounds.mjs')
+  const recDir = path.join(work, 'rec-test')
+  await writeRoundRecord(adapter, recDir, { project: 'x', round: 1, round_type: '例行验收' }, {}, [
+    { deviation_type: '缺项', severity: '严重', title: 'ok', evidence: 'e' },
+    { deviation_type: '坏类型', severity: '一般', title: 'bad', evidence: 'e' },
+  ])
+  const rec = await loadRoundRecord(adapter, path.join(recDir, '轮次记录.json'))
+  check(rec !== null && rec.issues.length === 1 && rec.issues[0].title === 'ok', '非法枚举条目写入侧被丢弃（读写对称）')
+  check(typeof rec.created_at === 'number', '轮次记录含 created_at')
 
   await rm(work, { recursive: true, force: true })
   if (failures > 0) {

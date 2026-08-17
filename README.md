@@ -10,17 +10,31 @@ acceptance/
 ├── agent.cordis.yml              # 组合文件（standard 为底 + tool-acceptance 行）
 ├── package.json                  # npm 依赖（node_modules 不入库）
 ├── plugins/
-│   └── acceptance.mjs            # 插件入口：acceptance_run/list_rounds/read 三个工具
+│   ├── acceptance.mjs            # 插件入口：注册四个验收工具 + 语义层指引
+│   ├── kit.mjs                   # 工具装配：会话沙箱策略戳 / fs 适配器 / 路径校验
+│   └── tools/                    # 四个工具：run / list / read / supplier
 ├── lib/
-│   ├── deliverable.mjs           # 目录/zip/tar.gz 安全扫描（防路径穿越 + 三重体积限制）
+│   ├── deliverable.mjs           # 目录/zip/tar.gz 安全扫描（防路径穿越 + 三重体积限制 + 产物目录排除）
 │   ├── documents.mjs             # md/docx/pdf/xlsx 解析（mammoth/pdfjs/xlsx）
 │   ├── images.mjs                # PNG/JPEG/GIF/WebP 尺寸解析（零依赖头部解析）
-│   ├── static.mjs                # tree-sitter 六语言符号提取（web-tree-sitter WASM）
+│   ├── static.mjs                # tree-sitter 六语言符号/引用/函数度量提取（web-tree-sitter WASM）
+│   ├── deps.mjs                  # 依赖图：引用分类（classifyRef）/路径解析/环检测/外部归口
+│   ├── metrics.mjs               # 复杂度度量聚合与超阈值清单
+│   ├── manifests.mjs             # 依赖清单（package.json/pom.xml/CMakeLists）
+│   ├── dupes.mjs                 # 重复片段检测
+│   ├── modules.mjs               # 模块表（Ce·Ca/主序列距离/规模聚合）+ 孤儿/可达性 + 架构摘要
+│   ├── layering.mjs              # 分层违规校验（白名单口径）
+│   ├── delta.mjs                 # 依赖漂移 delta（轮次间架构变化）
+│   ├── report.mjs                # HTML 事实仪表盘（验收仪表盘.html，纯静态无外部库）
+│   ├── supplier.mjs              # 供应商台账聚合
+│   ├── arch.mjs                  # 架构事实合成（七步深模块，单一组装点）
+│   ├── rounds.mjs                # RoundStore：轮次目录布局与产物读写（单一实现点）+ 变更识别
+│   ├── names.mjs                 # 产物文件名常量（单一来源）
 │   ├── baseline.mjs              # 基线加载（JSON/md/docx）与确定性补缺识别
-│   ├── rounds.mjs                # 文件快照/变更识别/轮次记录
-│   └── facts.mjs                 # 编排：确定性事实.json + 静态事实.json + 轮次记录.json
+│   └── facts.mjs                 # 两段式编排：扫描 + 事实合成/装配（确定性事实.json）
 ├── profiles/
-│   └── diagnostic/业务描述.md    # 车辆诊断（UDS）领域专项业务描述，agent 验收时读取
+│   ├── diagnostic/业务描述.md    # 车辆诊断（UDS）领域专项业务描述
+│   └── cloud-java/业务描述.md    # 云端 Java 领域专项业务描述
 ├── acceptance/                   # 验收产物根（缺省；不入库，见 .gitignore）
 ├── test/
 │   └── smoke.mjs                 # 冒烟测试（node test/smoke.mjs）

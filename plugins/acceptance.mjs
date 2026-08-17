@@ -1,289 +1,29 @@
 // 交付验收工具桥（原生实现版）：确定性验收能力内建在本插件中，无任何外部进程依赖。
-// 职责边界：只做确定性事实（安全解包/文档解析/静态分析/补缺识别/轮次快照，事实包内联返回）；
+// 职责边界：只做确定性事实（安全解包/文档解析/静态分析/架构事实/补缺识别/轮次快照，事实包内联返回）；
 // 四类偏差、问题分级、业务画像、接手方案等语义判断由 agent 完成。
 // 路径语义：交付物目录与需求/合同目录是两个独立来源，验收时由用户分别提供（绝对路径）；
 // 产物根目录缺省为插件工程根/acceptance（可用 config.outDir 覆盖）。
-// 产物落盘走 harness fs 服务（遵守会话沙箱策略），不需要任何提权。
+// 产物落盘走 harness fs 服务（遵守会话沙箱策略，盖会话策略戳，见 kit.mjs），不需要任何提权。
 
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { runFacts, FACTS_FILENAME, STATIC_FACTS_FILENAME } from '../lib/facts.mjs'
-import { loadRoundRecord, RECORD_FILENAME, listRoundDirs } from '../lib/rounds.mjs'
-import { parseLayeringRules } from '../lib/layering.mjs'
-import { buildSupplierLedger } from '../lib/supplier.mjs'
-
-const ARTIFACT_FILES = {
-  report: '验收报告.md',
-  issues: '问题清单.md',
-  facts: FACTS_FILENAME,
-  static_facts: STATIC_FACTS_FILENAME,
-  record: RECORD_FILENAME,
-}
-
-function normPath(value) {
-  let text = String(value).trim()
-  if (text.length >= 2 && ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'")))) {
-    text = text.slice(1, -1).trim()
-  }
-  if (text.length === 0) return null
-  if (!/^[a-zA-Z]:[\\/]/.test(text) && !text.startsWith('\\\\')) {
-    throw new Error('请提供绝对路径：交付物目录与需求/合同目录由用户分别提供')
-  }
-  return text
-}
-
-function validateProject(project) {
-  const value = String(project).trim()
-  if (value.length === 0) throw new Error('project 必填')
-  if (/[\\/"']/.test(value)) throw new Error('project 不能包含路径分隔符或引号')
-  return value
-}
-
-function validateRound(round) {
-  const value = Number(round)
-  if (!Number.isInteger(value) || value < 1) throw new Error('round 必须是正整数')
-  return value
-}
-
-function artifactFile(artifact) {
-  const name = ARTIFACT_FILES[artifact]
-  if (name === undefined) throw new Error('artifact 必须是 report/issues/facts/static_facts/record 之一')
-  return name
-}
-
-function jsonRender(_args, value) {
-  return [{ type: 'text', text: JSON.stringify(value, null, 2) }]
-}
-
-/** harness fs 服务 → lib 所需的适配器（全部绝对路径）。写入时盖会话沙箱策略戳。 */
-function harnessAdapter(fs, policyOf) {
-  return {
-    async stat(absPath) {
-      const target = await fs.resolve(absPath)
-      const info = await fs.stat(target)
-      return info === undefined ? null : { type: info.type, size: info.size ?? 0 }
-    },
-    async readText(absPath) {
-      return fs.readText(await fs.resolve(absPath))
-    },
-    async readBytes(absPath, maxBytes) {
-      const target = await fs.resolve(absPath)
-      try {
-        return await fs.readBytes(target, undefined, maxBytes)
-      } catch (error) {
-        if (String(error?.code ?? '').includes('TOO_LARGE')) return null
-        throw error
-      }
-    },
-    async writeText(absPath, content) {
-      try {
-        await fs.writeText(await fs.resolve(absPath), content, undefined, undefined, policyOf())
-      } catch (error) {
-        if (error?.code === 'FS_SANDBOX_DENIED') {
-          throw new Error(`[sandbox: 产物目录写入被会话沙箱拒绝] ${absPath} 不在当前会话可写范围内。`
-            + `请把 out_dir 指向会话工作区内的目录（如 <交付物>\\acceptance），或切换会话权限（/permission danger-full-access）后重试。原始信息：${error.message}`)
-        }
-        throw error
-      }
-    },
-    async listDir(absPath) {
-      const entries = await fs.listDir(await fs.resolve(absPath))
-      return entries.map((entry) => ({ name: entry.name, type: entry.type, size: entry.size ?? 0 }))
-    },
-  }
-}
-
-/** 解析当前工具调用所属会话的沙箱策略（会话不存在/服务缺失时回落部署默认）。 */
-function resolveSessionPolicy(ctx, exec) {
-  const sandboxPolicy = ctx.get('sandboxPolicy')
-  const agent = exec?.agent
-  if (sandboxPolicy === undefined || agent === undefined) return null
-  try {
-    return sandboxPolicy.resolve({ session: agent.session })
-  } catch {
-    return null
-  }
-}
+import { runTool } from './tools/run.mjs'
+import { listTool } from './tools/list.mjs'
+import { readTool } from './tools/read.mjs'
+import { supplierTool } from './tools/supplier.mjs'
 
 export const name = 'acceptance-bridge'
 
 export function apply(ctx, config = {}) {
-  const fs = ctx.get('fs')
   const tools = ctx.get('tools')
-  if (fs === undefined || tools === undefined) return
+  if (tools === undefined) return
   const presetRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url))) // 插件工程根
   const legacyOutRoot = String(config.outDir || path.join(presetRoot, 'acceptance')) // 读/列缺省：插件工程历史产物
+  const opts = { legacyOutRoot, config }
 
-  /** 解析产物根目录：工具参数 out_dir > config.outDir > 用途回落值。 */
-  function resolveOutDir(args, fallback) {
-    if (typeof args.out_dir === 'string' && args.out_dir.trim() !== '') {
-      const explicit = normPath(args.out_dir)
-      if (explicit === null) throw new Error('out_dir 路径无效')
-      return explicit
-    }
-    if (typeof config.outDir === 'string' && config.outDir.trim() !== '') {
-      return String(config.outDir)
-    }
-    return fallback
+  for (const tool of [runTool(ctx, opts), listTool(ctx, opts), readTool(ctx, opts), supplierTool(ctx, opts)]) {
+    ctx.effect(() => tools.register(tool), `tool: ${tool.name}`)
   }
-
-  const runTool = {
-    name: 'acceptance_run',
-    description: '对交付物执行一轮确定性验收分析（内建实现：安全解包、docx/pdf/md/xlsx 解析、tree-sitter 静态分析、架构事实〔依赖图/复杂度度量/依赖清单/重复片段〕、补缺识别、轮次快照与变更识别；绝不调用 LLM、不产出报告与结论——语义判断由 agent 基于返回的事实包完成）。验收前先向用户询问：「交付物目录」（供应商交付，必填）与「需求/合同目录」（甲方基线，可选），均用绝对路径；产物目录可选——缺省放交付物同级（<交付物父目录>\\acceptance），用户可指定任意目录，但必须在会话沙箱可写范围内（被拒时用交付物目录内或会话工作区内路径，或请用户 /permission danger-full-access）。大项目可能耗时数分钟。产物落盘 <产物根>/<项目>-轮次<N>/（确定性事实.json、静态事实.json、轮次记录.json），事实包同时内联在返回的 facts 字段（大项目会很大，分节细节用 acceptance_read 按 artifact 取数，不要整包重读）。复验轮次（round_type=复验）自动识别变更并携带上轮问题清单（previous_issues），agent 应自行评估修复状态，并对比两轮事实包的 architecture_facts 追踪架构趋势。',
-    parameters: {
-      type: 'object',
-      properties: {
-        deliverable: { type: 'string', description: '交付物目录或压缩包（zip/tar.gz）的绝对路径（由用户提供）' },
-        baseline: { type: 'string', description: '可选：基线（需求/合同）文件或目录（JSON/md/docx）的绝对路径；不提供则跳过补缺识别' },
-        project: { type: 'string', description: '项目名称（字母、数字、中文、连字符；不含路径分隔符与引号）' },
-        round: { type: 'number', description: '验收轮次（正整数）；同项目同轮次号会覆盖该轮产物' },
-        round_type: { type: 'string', enum: ['例行验收', '复验'], description: '轮次类型；复验会基于上一轮轮次记录做变更识别' },
-        out_dir: { type: 'string', description: '可选：产物根目录（绝对路径）；缺省为交付物同级的 acceptance 目录' },
-        layer_rules: { type: 'string', description: '可选：分层规则文件（架构分层规则.json）的绝对路径；缺省自动读取本轮产物目录下的同名文件；提供后做白名单分层校验，违规进 architecture_facts.layering' },
-      },
-      required: ['deliverable', 'project', 'round'],
-    },
-    output: { schema: { type: 'object' }, render: jsonRender },
-    timeoutMs: 600000,
-    async execute(args, exec) {
-      const deliverable = normPath(args.deliverable)
-      if (deliverable === null) throw new Error('deliverable 必填')
-      const project = validateProject(args.project)
-      const round = validateRound(args.round)
-      const roundType = args.round_type === '复验' ? '复验' : '例行验收'
-      const outDir = resolveOutDir(args, path.join(path.dirname(deliverable), 'acceptance'))
-      const roundDir = path.join(outDir, `${project}-轮次${round}`)
-      let baseline = null
-      if (typeof args.baseline === 'string' && args.baseline.trim() !== '') {
-        baseline = normPath(args.baseline)
-        if (baseline === null) throw new Error('baseline 路径无效')
-      }
-      // 每次调用独立解析会话沙箱策略并盖在写入上（会话 /permission 与工作区跟随本会话）
-      const policy = resolveSessionPolicy(ctx, exec)
-      const adapter = harnessAdapter(fs, () => policy)
-      // 分层规则：参数优先，缺省自动读取本轮产物目录下的 架构分层规则.json
-      let layerRules = null
-      if (typeof args.layer_rules === 'string' && args.layer_rules.trim() !== '') {
-        const rulesPath = normPath(args.layer_rules)
-        if (rulesPath === null) throw new Error('layer_rules 路径无效')
-        layerRules = parseLayeringRules(await adapter.readText(rulesPath))
-      } else {
-        const autoPath = path.join(roundDir, '架构分层规则.json')
-        if ((await adapter.stat(autoPath)) !== null) {
-          layerRules = parseLayeringRules(await adapter.readText(autoPath))
-        }
-      }
-      const startedAt = Date.now()
-      const facts = await runFacts({
-        adapter,
-        deliverable,
-        baseline,
-        roundInfo: { project, round, round_type: roundType },
-        outDir: roundDir,
-        layerRules,
-      })
-      return {
-        ok: true,
-        output_dir: roundDir,
-        duration_ms: Date.now() - startedAt,
-        facts,
-      }
-    },
-  }
-  ctx.effect(() => tools.register(runTool), 'tool: acceptance_run')
-
-  const listTool = {
-    name: 'acceptance_list_rounds',
-    description: '列出验收产物根目录下已完成的验收轮次（项目、轮次号与各轮产物文件清单），供复验与跨轮对比使用。产物根缺省为插件工程历史产物目录，可用 out_dir 指定（与验收时的产物目录一致）。',
-    parameters: {
-      type: 'object',
-      properties: {
-        project: { type: 'string', description: '可选：只列指定项目的轮次' },
-        out_dir: { type: 'string', description: '可选：产物根目录（绝对路径）；缺省为插件工程历史产物目录' },
-      },
-    },
-    output: { schema: { type: 'object' }, render: jsonRender },
-    async execute(args, exec) {
-      const adapter = harnessAdapter(fs, () => resolveSessionPolicy(ctx, exec))
-      const outRoot = resolveOutDir(args, legacyOutRoot)
-      if ((await adapter.stat(outRoot)) === null) {
-        return { rounds: [], note: '验收产物根目录尚不存在（还没有任何验收轮次）' }
-      }
-      const filter = typeof args.project === 'string' ? args.project.trim() : ''
-      const dirs = await listRoundDirs(adapter, outRoot, filter === '' ? undefined : filter)
-      const rounds = []
-      for (const dir of dirs) {
-        const files = []
-        for (const child of await adapter.listDir(path.join(outRoot, dir.dir))) {
-          files.push({ name: child.name, type: child.type, size: child.size })
-        }
-        rounds.push({ project: dir.project, round: dir.round, dir: dir.dir, files })
-      }
-      return { rounds }
-    },
-  }
-  ctx.effect(() => tools.register(listTool), 'tool: acceptance_list_rounds')
-
-  const readTool = {
-    name: 'acceptance_read',
-    description: '读取某项目某轮次的验收产物：report=验收报告.md、issues=问题清单.md（旧版 pipeline 产物）；facts=确定性事实.json（facts 出口的结构化事实包）、static_facts=静态事实.json、record=轮次记录.json（文件 sha256 快照与上轮问题，复验修复状态的基础）。JSON 产物返回解析后的对象，report/issues 返回 markdown 全文。',
-    parameters: {
-      type: 'object',
-      properties: {
-        project: { type: 'string', description: '项目名称' },
-        round: { type: 'number', description: '轮次（正整数）' },
-        artifact: { type: 'string', enum: ['report', 'issues', 'facts', 'static_facts', 'record'], description: '产物类型' },
-        out_dir: { type: 'string', description: '可选：产物根目录（绝对路径）；缺省为插件工程历史产物目录' },
-      },
-      required: ['project', 'round', 'artifact'],
-    },
-    output: { schema: { type: 'object' }, render: jsonRender },
-    async execute(args, exec) {
-      const adapter = harnessAdapter(fs, () => resolveSessionPolicy(ctx, exec))
-      const outRoot = resolveOutDir(args, legacyOutRoot)
-      const project = validateProject(args.project)
-      const round = validateRound(args.round)
-      const filename = artifactFile(args.artifact)
-      const filePath = path.join(outRoot, `${project}-轮次${round}`, filename)
-      const text = await adapter.readText(filePath)
-      if (args.artifact === 'report' || args.artifact === 'issues') {
-        return { path: filePath, text }
-      }
-      let json = null
-      let parseError = null
-      try {
-        json = JSON.parse(text)
-      } catch (error) {
-        parseError = String(error)
-      }
-      return { path: filePath, json, parse_error: parseError }
-    },
-  }
-  ctx.effect(() => tools.register(readTool), 'tool: acceptance_read')
-
-  const supplierTool = {
-    name: 'acceptance_supplier_profile',
-    description: '产出供应商确定性台账：聚合指定项目全部轮次的确定性摘要（轮次/类型/时间/文件数/相对上轮变更摘要/确定性缺项数/架构摘要〔依赖边/环/未解析/外部引用/超阈值函数/重复片段/模块数〕），并附跨项目趋势表（按时间/轮次序）。返回 JSON 台账；语义档案（供应商档案.md：问题复发/整改时效/质量趋势）由 agent 基于台账 + 各轮问题清单撰写。',
-    parameters: {
-      type: 'object',
-      properties: {
-        supplier: { type: 'string', description: '供应商名（分组标签，不含路径分隔符与引号）' },
-        projects: { type: 'array', items: { type: 'string' }, description: '项目名数组（必须是验收时使用的项目名）' },
-        out_dir: { type: 'string', description: '可选：产物根目录（绝对路径）；缺省为插件工程历史产物目录' },
-      },
-      required: ['supplier', 'projects'],
-    },
-    output: { schema: { type: 'object' }, render: jsonRender },
-    async execute(args, exec) {
-      const adapter = harnessAdapter(fs, () => resolveSessionPolicy(ctx, exec))
-      const supplier = validateProject(args.supplier)
-      const projects = Array.isArray(args.projects) ? args.projects.map((item) => String(item).trim()).filter((item) => item.length > 0) : []
-      if (projects.length === 0) throw new Error('projects 必填：至少一个项目名')
-      const outRoot = resolveOutDir(args, legacyOutRoot)
-      return await buildSupplierLedger({ adapter, outRoot, supplier, projects })
-    },
-  }
-  ctx.effect(() => tools.register(supplierTool), 'tool: acceptance_supplier_profile')
 
   const systemPrompt = ctx.get('systemPrompt')
   if (systemPrompt !== undefined) {
