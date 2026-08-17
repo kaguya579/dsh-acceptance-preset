@@ -276,6 +276,8 @@ async function main() {
   console.log('场景 12：分层违规校验（白名单）')
   const layeringRules = {
     layers: [
+      { name: 'tslib-tree', match: 'ts/lib/**' },
+      { name: 'ts-tree', match: 'ts/**' },
       { name: 'app', match: 'js' },
       { name: 'lib', match: 'js/lib' },
       { name: 'demo', match: 'maven/src/main/java/cn/demo' },
@@ -295,6 +297,7 @@ async function main() {
   check(layering12 !== null, '分层校验事实存在')
   check(layering12.violations.some((violation) => violation.from === 'maven/src/main/java/cn/demo' && violation.to === 'maven/src/main/java/cn/other'), '白名单违规命中（demo→other 未声明）')
   check(layering12.violations.some((violation) => violation.rule === 'demo→other'), '违规带 rule 字段（缺失的允许依赖对）')
+  check(layering12.violations.some((violation) => violation.from === 'ts' && violation.to === 'ts/lib'), '`/**` 前缀匹配层命中（ts→ts/lib 未声明违规）')
   check(!layering12.violations.some((violation) => violation.from === 'js/app.js' && violation.to === 'js/lib/util.js'), '白名单放行（app→lib 已声明）')
   check(layering12.unmatched_count >= 1, '未匹配层边计数（ts/c/cycle 等未分层）')
 
@@ -349,6 +352,30 @@ async function main() {
   const rec = await loadRoundRecord(adapter, path.join(recDir, '轮次记录.json'))
   check(rec !== null && rec.issues.length === 1 && rec.issues[0].title === 'ok', '非法枚举条目写入侧被丢弃（读写对称）')
   check(typeof rec.created_at === 'number', '轮次记录含 created_at')
+
+  // ── 场景 17：tar.gz 交付物扫描等价性 ──
+  console.log('场景 17：tar.gz 交付物（等价性）')
+  const { gzipSync } = await import('node:zlib')
+  const tar = await import('tar-stream')
+  const tarStream = tar.pack()
+  const tgzRoot = path.join(FIXTURES, 'sample-delivery')
+  for (const name of ['README.md', 'code/main.c', 'docs/产品说明.md']) {
+    tarStream.entry({ name }, await readFile(path.join(tgzRoot, name)))
+  }
+  tarStream.finalize()
+  const tarChunks = []
+  for await (const chunk of tarStream) tarChunks.push(chunk)
+  const tgzPath = path.join(work, 'delivery.tar.gz')
+  await writeFile(tgzPath, Buffer.from(gzipSync(Buffer.concat(tarChunks))))
+  const facts17 = await runFacts({
+    adapter,
+    deliverable: tgzPath,
+    baseline: path.join(FIXTURES, 'baseline.json'),
+    roundInfo: { project: '冒烟项目', round: 17, round_type: '例行验收' },
+    outRoot: path.join(work, 'acceptance'),
+  })
+  check(facts17.parse.file_count === facts1.parse.file_count, `tar.gz 与目录文件数一致（${facts17.parse.file_count}）`)
+  check(facts17.static_facts.files.length === facts1.static_facts.files.length, 'tar.gz 与目录静态分析一致')
 
   await rm(work, { recursive: true, force: true })
   if (failures > 0) {
