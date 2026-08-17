@@ -167,7 +167,24 @@ async function main() {
   check(hasEdge('ts/app.ts', 'ts/lib/util.ts', 'import'), 'TS 扩展名推断依赖边')
   check(hasEdge('tsx/App.tsx', 'tsx/Button.tsx', 'import'), 'TSX 扩展名推断依赖边')
   check(arch5.dependencies.cycles.some((cycle) => cycle.includes('cycle/a.js') && cycle.includes('cycle/b.js')), '循环依赖环命中')
-  check(arch5.dependencies.unresolved.some((item) => item.file === 'tsx/Button.tsx' && item.ref === 'react'), '包名引用归未解析')
+  // 归口：包名引用 → 外部计数，不进 unresolved；相对路径未定位 → unresolved 真问题
+  check(!arch5.dependencies.unresolved.some((item) => item.file === 'tsx/Button.tsx' && item.ref === 'react'), '包名引用不再归未解析')
+  check(arch5.dependencies.external.some((entry) => entry.group === 'third-party' && entry.prefix === 'react'), '包名引用归外部计数（react）')
+  check(arch5.dependencies.external.some((entry) => entry.group === 'jdk' && entry.prefix === 'java'), 'JDK 引用归外部计数（java）')
+  check(arch5.dependencies.unresolved.some((item) => item.file === 'js/miss.js' && item.ref === './nope.js'), '相对路径未定位仍归未解析')
+  check(arch5.dependencies.static_imports >= 0, '静态导入计数存在')
+  // 通配导入 → 包级模块边
+  check(arch5.dependencies.module_edges.some((edge) => edge.kind === 'wildcard' && edge.from === 'maven/src/main/java/cn/demo' && edge.to === 'maven/src/main/java/cn/other'), '通配导入包级模块边')
+
+  // ── 场景 5b：耦合度量 / 孤儿 / 可达性 / 模块聚合表 ──
+  const moduleTable = arch5.modules
+  check(moduleTable.some((module) => module.name === 'ts' && module.ce >= 1), '模块耦合 Ce 计算（ts→ts/lib）')
+  check(moduleTable.some((module) => module.name === 'ts/lib' && module.ca >= 1), '模块耦合 Ca 计算（ts/lib 被依赖）')
+  check(moduleTable.some((module) => module.instability >= 0 && module.instability <= 1 && module.distance >= 0 && module.distance <= 1), '不稳定性/主序列距离在 [0,1]')
+  check(moduleTable.some((module) => module.functions > 0 && module.lines > 0), '模块规模聚合（函数数/行数）')
+  check(arch5.orphans.includes('c/big.c'), '孤儿文件识别（big.c 无任何边）')
+  check(arch5.unreachable.includes('cycle/a.js') && arch5.unreachable.includes('c/big.c'), '入口可达性（cycle/未接入文件不可达）')
+  check(arch5.entry_files.includes('c/main.c') && arch5.entry_files.includes('js/app.js'), '入口文件启发式命中')
 
   // ── 场景 6：复杂度度量超阈值清单（同一轮事实） ──
   const overFuncs = arch5.metrics.over_threshold.functions
@@ -208,6 +225,23 @@ async function main() {
   console.log('场景 9：历史 acceptance-facts/1 可读兼容')
   const legacy = JSON.parse(await readFile(path.join(FIXTURES, 'facts-v1.json'), 'utf8'))
   check(legacy.schema === 'acceptance-facts/1' && legacy.parse.file_count === 1, '历史 /1 事实包解析')
+
+  // ── 场景 10：产物目录排除（交付物内 acceptance 不再自污染） ──
+  console.log('场景 10：交付物内产物目录排除')
+  const polluted = path.join(work, 'polluted-delivery')
+  await cp(path.join(FIXTURES, 'sample-delivery'), polluted, { recursive: true })
+  await mkdir(path.join(polluted, 'acceptance', 'hutool-轮次1'), { recursive: true })
+  await writeFile(path.join(polluted, 'acceptance', 'junk-上轮产物.txt'), 'junk', 'utf8') // 预置旧产物
+  await writeFile(path.join(polluted, 'acceptance', 'hutool-轮次1', '确定性事实.json'), '{}', 'utf8')
+  const facts10 = await runFacts({
+    adapter,
+    deliverable: polluted,
+    baseline: null,
+    roundInfo: { project: '冒烟项目', round: 10, round_type: '例行验收' },
+    outDir: path.join(polluted, 'acceptance', '冒烟项目-轮次10'),
+  })
+  check(facts10.parse.file_count === 3, `排除产物目录后文件数 3（实际 ${facts10.parse.file_count}）`)
+  check(!facts10.parse.paths.some((entry) => entry.startsWith('acceptance/')), '产物目录子树被排除')
 
   await rm(work, { recursive: true, force: true })
   if (failures > 0) {
