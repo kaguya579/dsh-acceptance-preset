@@ -1,8 +1,50 @@
-# Spec: arch-quality-review（架构与质量评审第一刀 + 第二轮增量）
+# Spec: arch-quality-review（架构与质量评审第一刀 + 第二轮增量 + 第三轮设计）
 
 Status: ready-for-agent
 
-2026-08-16 `/grill-with-docs` 会话收敛后、`/to-spec` 产出（第一刀）。2026-08-17 第二轮增量：真实验证（hutool 轮次2）后的修复与新架构事实。领域术语见 `CONTEXT.md`；决策依据见 ADR-0004（架构事实扩展）、ADR-0005（优化项咨询性定位）。
+2026-08-16 `/grill-with-docs` 会话收敛后、`/to-spec` 产出（第一刀）。2026-08-17 第二轮增量（验证后修复）与第三轮设计（六项候选定稿，tickets 14–19 待实现）。领域术语见 `CONTEXT.md`；决策依据见 ADR-0004（架构事实扩展）、ADR-0005（优化项咨询性定位）。
+
+## 第三轮设计（2026-08-17 grilling 定稿，tickets 14–19）
+
+### 设计① 分层违规校验（ticket 14）
+
+- **规则来源**（决策）：agent 从架构文档/业务描述提取分层意图，写成本轮产物目录下 `架构分层规则.json`（本轮产物，复验可更新）；零必填输入；
+- **规则格式**：`layers[]`（name + 模块路径匹配模式）、`rules[]`（allowed 依赖对 from→to）；
+- **判定口径**（决策）：**白名单**——rules 声明的 allowed 对放行，未声明的跨层依赖=违规；边的一端未匹配任何层则忽略并计数 `unmatched_count`；
+- **校验器**：新 `lib/layering.mjs`，输入规则 + 模块级边（file + wildcard），输出 `violations[]`（{rule, from, to}）；
+- **编排**：`acceptance_run` 加可选参数 `layer_rules`；产物目录存在 `架构分层规则.json` 时自动读取；
+- **事实输出**：`architecture_facts.layering = { layers, rules, violations, unmatched_count }`；
+- **语义层**：04 评审节「分层违规」优化项直接用 violations 作证据。
+
+### 设计② 依赖漂移 diff 内建（ticket 15）
+
+- **数据源**：复验轮次自动读上轮 `<outRoot>/<项目>-轮次<N-1>/确定性事实.json` 对比（轮次记录与事实包同目录，无额外脆弱性、零记录格式变更）；
+- **delta 范围**：文件级/模块级边增删、环增删、模块 ce/ca 增减与新增/消失模块、函数数/行数总量变化、unresolved/external 数量变化；
+- **输出**：本轮事实包新增 `architecture_delta` 节（schema 仍 acceptance-facts/2 兼容超集）；首轮/无上轮产物时 `delta=null` + 说明；
+- **语义层**：00 总览/04 评审节直接引用 delta，「未检查≠无」仍适用。
+
+### 设计③ HTML 事实仪表盘（ticket 16）
+
+- **范围**（决策）：只做事实仪表盘，md 文档组保留（agent 不写 HTML）；
+- 新 `lib/report.mjs`：单页静态 HTML（数据内嵌、无网络、无外部 JS 库、SVG 手写：依赖图分层布局、度量分布条形图、模块表、超阈值/重复/清单/violations/delta 表格）；
+- 产物：`<项目>-轮次N\验收仪表盘.html`，`acceptance_run` 每轮自动生成（纯确定性）；体量控制：Top N + 聚合，明细截断带提示；
+- 语义层：00 总览链接仪表盘。
+
+### 设计④ ATAM 骨架模板化（ticket 17）
+
+- 04-架构与质量评审.md 内部结构升级：架构梳理 → 质量属性场景（性能/可维护性/可测试性等，每条=场景+证据）→ 敏感点/权衡点 → 优化项（高/中/低）→ 接手衔接；
+- 模板写进 systemPrompt 指引；CONTEXT.md 补「质量属性场景」「敏感点/权衡点」词条；零确定性层改动。
+
+### 设计⑤ 供应商档案确定性台账工具（ticket 18，决策 B）
+
+- 新工具 `acceptance_supplier_profile`：参数 supplier（供应商名，作分组标签）、projects（项目名数组）、out_dir 可选；
+- 行为：遍历各项目全部轮次 → 读轮次记录与事实包 → 产出**确定性台账 JSON**（每项目每轮次：时间/文件数/变更摘要/确定性缺项数/架构摘要〔edges/cycles/unresolved/超阈值函数数/重复片段数/模块数〕+ 跨项目趋势表）；
+- 语义层：agent 基于台账 + 03-问题清单.md 写 `供应商档案.md`（问题复发/整改时效/质量趋势，数据溯源到轮次记录）；
+- CONTEXT.md「供应商档案」术语更新（台账 + 语义档案双层）。
+
+### 设计⑥ 云端 Java 专项业务描述（ticket 19）
+
+- `profiles/cloud-java/业务描述.md`：业务背景 + 检查重点（分层与包结构、接口/API 文档一致性、配置外部化、异常处理与日志、依赖与版本管理〔对 pom 清单校验〕、测试与 CI、敏感信息硬编码）+ 常见偏差（含 hutool 验证实测信号：版本漂移、CHANGELOG 不同步、模块 pom 一致性）；零插件改动。
 
 ## 第二轮增量（2026-08-17，tickets 10–13）
 
