@@ -8,7 +8,7 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runFacts, FACTS_FILENAME, STATIC_FACTS_FILENAME } from '../lib/facts.mjs'
-import { loadRoundRecord, RECORD_FILENAME } from '../lib/rounds.mjs'
+import { loadRoundRecord, RECORD_FILENAME, listRoundDirs } from '../lib/rounds.mjs'
 import { parseLayeringRules } from '../lib/layering.mjs'
 import { buildSupplierLedger } from '../lib/supplier.mjs'
 
@@ -210,19 +210,14 @@ export function apply(ctx, config = {}) {
         return { rounds: [], note: '验收产物根目录尚不存在（还没有任何验收轮次）' }
       }
       const filter = typeof args.project === 'string' ? args.project.trim() : ''
+      const dirs = await listRoundDirs(adapter, outRoot, filter === '' ? undefined : filter)
       const rounds = []
-      for (const entry of await adapter.listDir(outRoot)) {
-        if (entry.type !== 'directory') continue
-        const match = /^(.*?)-轮次(\d+)$/.exec(entry.name)
-        if (match === null) continue
-        const project = match[1]
-        const round = Number(match[2])
-        if (filter !== '' && project !== filter) continue
+      for (const dir of dirs) {
         const files = []
-        for (const child of await adapter.listDir(path.join(outRoot, entry.name))) {
+        for (const child of await adapter.listDir(path.join(outRoot, dir.dir))) {
           files.push({ name: child.name, type: child.type, size: child.size })
         }
-        rounds.push({ project, round, dir: entry.name, files })
+        rounds.push({ project: dir.project, round: dir.round, dir: dir.dir, files })
       }
       return { rounds }
     },
@@ -268,7 +263,7 @@ export function apply(ctx, config = {}) {
 
   const supplierTool = {
     name: 'acceptance_supplier_profile',
-    description: '产出供应商确定性台账：聚合指定项目全部轮次的确定性摘要（轮次/类型/文件数/确定性缺项数/架构摘要〔依赖边/环/未解析/外部引用/超阈值函数/重复片段/模块数〕）。返回 JSON 台账；语义档案（供应商档案.md：问题复发/整改时效/质量趋势）由 agent 基于台账 + 各轮问题清单撰写。',
+    description: '产出供应商确定性台账：聚合指定项目全部轮次的确定性摘要（轮次/类型/时间/文件数/相对上轮变更摘要/确定性缺项数/架构摘要〔依赖边/环/未解析/外部引用/超阈值函数/重复片段/模块数〕），并附跨项目趋势表（按时间/轮次序）。返回 JSON 台账；语义档案（供应商档案.md：问题复发/整改时效/质量趋势）由 agent 基于台账 + 各轮问题清单撰写。',
     parameters: {
       type: 'object',
       properties: {

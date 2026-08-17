@@ -253,6 +253,7 @@ async function main() {
     outDir: path.join(work, 'acceptance', '漂移项目-轮次1'),
   })
   check(facts11a.architecture_delta === null, '首轮 delta 为 null')
+  check(String(facts11a.architecture_delta_note).includes('首轮'), '首轮 delta note 说明')
   const archCopy = path.join(work, 'arch-v2')
   await cp(path.join(FIXTURES, 'arch-code'), archCopy, { recursive: true })
   await writeFile(path.join(archCopy, 'ts', 'lib', 'extra.ts'), 'export function extra() { return 1; }\n', 'utf8')
@@ -267,6 +268,7 @@ async function main() {
   })
   check(facts11b.architecture_delta !== null, '复验轮次产生 delta')
   check(facts11b.architecture_delta.edges_added.some((edge) => edge.from === 'ts/app.ts' && edge.to === 'ts/lib/extra.ts' && edge.kind === 'import'), 'delta 新增边命中')
+  check(Array.isArray(facts11b.architecture_delta.module_coupling_changes), 'delta 模块 ce/ca 变化量存在')
   check(Array.isArray(facts11b.architecture_delta.modules_added) && Array.isArray(facts11b.architecture_delta.modules_removed), 'delta 模块增删为数组')
   check(typeof facts11b.architecture_delta.function_count_delta === 'number', 'delta 函数数变化量存在')
 
@@ -292,6 +294,7 @@ async function main() {
   const layering12 = facts12.architecture_facts.layering
   check(layering12 !== null, '分层校验事实存在')
   check(layering12.violations.some((violation) => violation.from === 'maven/src/main/java/cn/demo' && violation.to === 'maven/src/main/java/cn/other'), '白名单违规命中（demo→other 未声明）')
+  check(layering12.violations.some((violation) => violation.rule === 'demo→other'), '违规带 rule 字段（缺失的允许依赖对）')
   check(!layering12.violations.some((violation) => violation.from === 'js/app.js' && violation.to === 'js/lib/util.js'), '白名单放行（app→lib 已声明）')
   check(layering12.unmatched_count >= 1, '未匹配层边计数（ts/c/cycle 等未分层）')
 
@@ -313,6 +316,9 @@ async function main() {
   const firstRound = smokeProject?.rounds?.[0]
   check(firstRound !== undefined && firstRound.file_count === 3, '台账行含文件数')
   check(typeof firstRound?.arch?.edges === 'number' && typeof firstRound?.arch?.cycles === 'number', '台账行含架构摘要')
+  check(typeof firstRound?.created_at === 'number', '台账行含时间')
+  check(ledger.projects.some((project) => project.rounds.some((row) => row.changes !== null)), '台账行含相对上轮变更摘要')
+  check(ledger.trend.length >= 4, '台账含跨项目趋势表（≥4 行）')
   check(ledger.total_rounds >= 4, '台账跨项目轮次合计（≥4）')
 
   await rm(work, { recursive: true, force: true })
