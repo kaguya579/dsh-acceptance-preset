@@ -243,6 +243,78 @@ async function main() {
   check(facts10.parse.file_count === 3, `排除产物目录后文件数 3（实际 ${facts10.parse.file_count}）`)
   check(!facts10.parse.paths.some((entry) => entry.startsWith('acceptance/')), '产物目录子树被排除')
 
+  // ── 场景 11：依赖漂移 delta（首轮 null，复验产出新增边） ──
+  console.log('场景 11：依赖漂移 delta')
+  const facts11a = await runFacts({
+    adapter,
+    deliverable: path.join(FIXTURES, 'arch-code'),
+    baseline: null,
+    roundInfo: { project: '漂移项目', round: 1, round_type: '例行验收' },
+    outDir: path.join(work, 'acceptance', '漂移项目-轮次1'),
+  })
+  check(facts11a.architecture_delta === null, '首轮 delta 为 null')
+  const archCopy = path.join(work, 'arch-v2')
+  await cp(path.join(FIXTURES, 'arch-code'), archCopy, { recursive: true })
+  await writeFile(path.join(archCopy, 'ts', 'lib', 'extra.ts'), 'export function extra() { return 1; }\n', 'utf8')
+  const appTs = path.join(archCopy, 'ts', 'app.ts')
+  await writeFile(appTs, (await readFile(appTs, 'utf8')) + "\nimport { extra } from './lib/extra';\nconsole.log(extra());\n", 'utf8')
+  const facts11b = await runFacts({
+    adapter,
+    deliverable: archCopy,
+    baseline: null,
+    roundInfo: { project: '漂移项目', round: 2, round_type: '复验' },
+    outDir: path.join(work, 'acceptance', '漂移项目-轮次2'),
+  })
+  check(facts11b.architecture_delta !== null, '复验轮次产生 delta')
+  check(facts11b.architecture_delta.edges_added.some((edge) => edge.from === 'ts/app.ts' && edge.to === 'ts/lib/extra.ts' && edge.kind === 'import'), 'delta 新增边命中')
+  check(Array.isArray(facts11b.architecture_delta.modules_added) && Array.isArray(facts11b.architecture_delta.modules_removed), 'delta 模块增删为数组')
+  check(typeof facts11b.architecture_delta.function_count_delta === 'number', 'delta 函数数变化量存在')
+
+  // ── 场景 12：分层违规校验（白名单口径） ──
+  console.log('场景 12：分层违规校验（白名单）')
+  const layeringRules = {
+    layers: [
+      { name: 'app', match: 'js' },
+      { name: 'lib', match: 'js/lib' },
+      { name: 'demo', match: 'maven/src/main/java/cn/demo' },
+      { name: 'other', match: 'maven/src/main/java/cn/other' },
+    ],
+    rules: [{ from: 'app', to: 'lib' }],
+  }
+  const facts12 = await runFacts({
+    adapter,
+    deliverable: path.join(FIXTURES, 'arch-code'),
+    baseline: null,
+    roundInfo: { project: '冒烟项目', round: 12, round_type: '例行验收' },
+    outDir: path.join(work, 'acceptance', '冒烟项目-轮次12'),
+    layerRules: layeringRules,
+  })
+  const layering12 = facts12.architecture_facts.layering
+  check(layering12 !== null, '分层校验事实存在')
+  check(layering12.violations.some((violation) => violation.from === 'maven/src/main/java/cn/demo' && violation.to === 'maven/src/main/java/cn/other'), '白名单违规命中（demo→other 未声明）')
+  check(!layering12.violations.some((violation) => violation.from === 'js/app.js' && violation.to === 'js/lib/util.js'), '白名单放行（app→lib 已声明）')
+  check(layering12.unmatched_count >= 1, '未匹配层边计数（ts/c/cycle 等未分层）')
+
+  // ── 场景 13：HTML 事实仪表盘落盘 ──
+  console.log('场景 13：HTML 事实仪表盘')
+  const dashPath = path.join(work, 'acceptance', '冒烟项目-轮次5', '验收仪表盘.html')
+  check((await adapter.stat(dashPath)) !== null, '验收仪表盘.html 落盘')
+  const dashHtml = await adapter.readText(dashPath)
+  check(dashHtml.includes('<svg'), '仪表盘含 SVG 依赖图')
+  check(dashHtml.includes('ts/lib'), '仪表盘含模块名')
+  check(!/\b(?:src|href)="https?:/.test(dashHtml), '无外部资源引用')
+
+  // ── 场景 14：供应商台账聚合 ──
+  console.log('场景 14：供应商台账聚合')
+  const { buildSupplierLedger } = await import('../lib/supplier.mjs')
+  const ledger = await buildSupplierLedger({ adapter, outRoot: path.join(work, 'acceptance'), supplier: '测试供应商', projects: ['冒烟项目', '漂移项目'] })
+  const smokeProject = ledger.projects.find((project) => project.name === '冒烟项目')
+  check(smokeProject !== undefined && smokeProject.rounds.length >= 2, '台账含冒烟项目多轮（≥2）')
+  const firstRound = smokeProject?.rounds?.[0]
+  check(firstRound !== undefined && firstRound.file_count === 3, '台账行含文件数')
+  check(typeof firstRound?.arch?.edges === 'number' && typeof firstRound?.arch?.cycles === 'number', '台账行含架构摘要')
+  check(ledger.total_rounds >= 4, '台账跨项目轮次合计（≥4）')
+
   await rm(work, { recursive: true, force: true })
   if (failures > 0) {
     console.error(`\n${failures} 项断言失败`)

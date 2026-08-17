@@ -9,6 +9,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runFacts, FACTS_FILENAME, STATIC_FACTS_FILENAME } from '../lib/facts.mjs'
 import { loadRoundRecord, RECORD_FILENAME } from '../lib/rounds.mjs'
+import { parseLayeringRules } from '../lib/layering.mjs'
+import { buildSupplierLedger } from '../lib/supplier.mjs'
 
 const ARTIFACT_FILES = {
   report: '验收报告.md',
@@ -137,6 +139,7 @@ export function apply(ctx, config = {}) {
         round: { type: 'number', description: '验收轮次（正整数）；同项目同轮次号会覆盖该轮产物' },
         round_type: { type: 'string', enum: ['例行验收', '复验'], description: '轮次类型；复验会基于上一轮轮次记录做变更识别' },
         out_dir: { type: 'string', description: '可选：产物根目录（绝对路径）；缺省为交付物同级的 acceptance 目录' },
+        layer_rules: { type: 'string', description: '可选：分层规则文件（架构分层规则.json）的绝对路径；缺省自动读取本轮产物目录下的同名文件；提供后做白名单分层校验，违规进 architecture_facts.layering' },
       },
       required: ['deliverable', 'project', 'round'],
     },
@@ -158,6 +161,18 @@ export function apply(ctx, config = {}) {
       // 每次调用独立解析会话沙箱策略并盖在写入上（会话 /permission 与工作区跟随本会话）
       const policy = resolveSessionPolicy(ctx, exec)
       const adapter = harnessAdapter(fs, () => policy)
+      // 分层规则：参数优先，缺省自动读取本轮产物目录下的 架构分层规则.json
+      let layerRules = null
+      if (typeof args.layer_rules === 'string' && args.layer_rules.trim() !== '') {
+        const rulesPath = normPath(args.layer_rules)
+        if (rulesPath === null) throw new Error('layer_rules 路径无效')
+        layerRules = parseLayeringRules(await adapter.readText(rulesPath))
+      } else {
+        const autoPath = path.join(roundDir, '架构分层规则.json')
+        if ((await adapter.stat(autoPath)) !== null) {
+          layerRules = parseLayeringRules(await adapter.readText(autoPath))
+        }
+      }
       const startedAt = Date.now()
       const facts = await runFacts({
         adapter,
@@ -165,6 +180,7 @@ export function apply(ctx, config = {}) {
         baseline,
         roundInfo: { project, round, round_type: roundType },
         outDir: roundDir,
+        layerRules,
       })
       return {
         ok: true,
@@ -187,7 +203,8 @@ export function apply(ctx, config = {}) {
       },
     },
     output: { schema: { type: 'object' }, render: jsonRender },
-    async execute(args) {
+    async execute(args, exec) {
+      const adapter = harnessAdapter(fs, () => resolveSessionPolicy(ctx, exec))
       const outRoot = resolveOutDir(args, legacyOutRoot)
       if ((await adapter.stat(outRoot)) === null) {
         return { rounds: [], note: '验收产物根目录尚不存在（还没有任何验收轮次）' }
@@ -226,7 +243,8 @@ export function apply(ctx, config = {}) {
       required: ['project', 'round', 'artifact'],
     },
     output: { schema: { type: 'object' }, render: jsonRender },
-    async execute(args) {
+    async execute(args, exec) {
+      const adapter = harnessAdapter(fs, () => resolveSessionPolicy(ctx, exec))
       const outRoot = resolveOutDir(args, legacyOutRoot)
       const project = validateProject(args.project)
       const round = validateRound(args.round)
@@ -248,12 +266,36 @@ export function apply(ctx, config = {}) {
   }
   ctx.effect(() => tools.register(readTool), 'tool: acceptance_read')
 
+  const supplierTool = {
+    name: 'acceptance_supplier_profile',
+    description: '产出供应商确定性台账：聚合指定项目全部轮次的确定性摘要（轮次/类型/文件数/确定性缺项数/架构摘要〔依赖边/环/未解析/外部引用/超阈值函数/重复片段/模块数〕）。返回 JSON 台账；语义档案（供应商档案.md：问题复发/整改时效/质量趋势）由 agent 基于台账 + 各轮问题清单撰写。',
+    parameters: {
+      type: 'object',
+      properties: {
+        supplier: { type: 'string', description: '供应商名（分组标签，不含路径分隔符与引号）' },
+        projects: { type: 'array', items: { type: 'string' }, description: '项目名数组（必须是验收时使用的项目名）' },
+        out_dir: { type: 'string', description: '可选：产物根目录（绝对路径）；缺省为插件工程历史产物目录' },
+      },
+      required: ['supplier', 'projects'],
+    },
+    output: { schema: { type: 'object' }, render: jsonRender },
+    async execute(args, exec) {
+      const adapter = harnessAdapter(fs, () => resolveSessionPolicy(ctx, exec))
+      const supplier = validateProject(args.supplier)
+      const projects = Array.isArray(args.projects) ? args.projects.map((item) => String(item).trim()).filter((item) => item.length > 0) : []
+      if (projects.length === 0) throw new Error('projects 必填：至少一个项目名')
+      const outRoot = resolveOutDir(args, legacyOutRoot)
+      return await buildSupplierLedger({ adapter, outRoot, supplier, projects })
+    },
+  }
+  ctx.effect(() => tools.register(supplierTool), 'tool: acceptance_supplier_profile')
+
   const systemPrompt = ctx.get('systemPrompt')
   if (systemPrompt !== undefined) {
     ctx.effect(() => systemPrompt.section({
       name: 'tool:acceptance',
       order: 121,
-      text: '交付验收工具桥：验收前先向用户询问——「交付物目录」（供应商交付，必填）与「需求/合同目录」（甲方基线，可选），均用绝对路径；「产物目录」可选：缺省放交付物同级（<交付物父目录>\\acceptance），用户也可指定任意目录（out_dir，验收全程统一使用；必须在会话沙箱可写范围内，被拒时改用交付物目录内或会话工作区内路径，或请用户 /permission danger-full-access）。调用 acceptance_run（只执行确定性层：解析/静态分析/架构事实〔依赖图〔含通配导入包级边、外部引用计数、真未解析〕/复杂度度量/模块表〔耦合 Ce·Ca、不稳定性、主序列距离、规模与重复聚合〕/孤儿与可达性/依赖清单/重复片段〕/补缺/轮次快照，事实包内联返回，绝不调用 LLM；事实包大时分节用 acceptance_read 取数，勿整包重读）。四类偏差、问题分级、业务画像、接手方案、架构与质量评审等语义判断由你基于事实包完成（可配合 read/grep 下钻交付物代码与文档取证）。术语与判定口径：验收结论为通过/打回/无法判定（无基线为建议通过/建议整改/无法判定）。产出形态：必须产出「验收文档组」六个文件到本轮产物目录（用你自己的 write 工具写）：00-验收总览.md（判定+产物索引）、01-交付物概况与业务画像.md、02-偏差明细与取证.md、03-问题清单.md（供整改）、04-架构与质量评审.md、05-接手方案.md——每个文件承载对应章节的**细节**（逐条证据、数据、分级），总览只做结论与索引，不要把所有章节塞进一个文件。03-问题清单.md 用固定表格：编号 | 类别（四类偏差） | 位置（文件:行号） | 证据 | 级别（阻断/严重/一般） | 整改要求；优化项不进问题清单。架构与质量评审：架构梳理（依赖图/模块边界/耦合表〔Ce·Ca 高者=中枢与脆弱点〕/孤儿与不可达文件）→ 优化项清单（高/中/低分组，每条=证据〔文件:行号+度量数字〕+判断+建议）→ 与接手方案衔接；检查清单参考：依赖环、孤儿模块、入口可达性、分层违规、超阈值复杂度（函数>80行/圈复杂度>15/文件>1000行）、重复片段；风格类主观项不列入优化项；优化项不影响验收结论、不进整改清单、不参与问题分级。复验轮次：对比事实包 changes 与 previous_issues 逐条评估修复状态——未修复/部分修复/已修复/无法判定（未做语义检查→无法判定；「未检查」绝不表述为「已修复」，防假已修复护栏），00-验收总览给出整改完成率（已修复数/上轮问题总数）；并对比两轮 architecture_facts 追踪架构趋势（新增/消失依赖环、复杂度增减、依赖增删）；「未检查」绝不表述为「无」。领域专项：车辆诊断（UDS）业务描述见插件工程 profiles/diagnostic/业务描述.md，相关交付物验收时应先读它并按其检查重点执行。',
+      text: '交付验收工具桥：验收前先向用户询问——「交付物目录」（供应商交付，必填）与「需求/合同目录」（甲方基线，可选），均用绝对路径；「产物目录」可选：缺省放交付物同级（<交付物父目录>\\acceptance），用户也可指定任意目录（out_dir，验收全程统一使用；必须在会话沙箱可写范围内，被拒时改用交付物目录内或会话工作区内路径，或请用户 /permission danger-full-access）。调用 acceptance_run（只执行确定性层：解析/静态分析/架构事实〔依赖图〔含通配导入包级边、外部引用计数、真未解析〕/复杂度度量/模块表〔耦合 Ce·Ca、不稳定性、主序列距离、规模与重复聚合〕/孤儿与可达性/依赖清单/重复片段〕/补缺/轮次快照，事实包内联返回，绝不调用 LLM；事实包大时分节用 acceptance_read 取数，勿整包重读）。四类偏差、问题分级、业务画像、接手方案、架构与质量评审等语义判断由你基于事实包完成（可配合 read/grep 下钻交付物代码与文档取证）。术语与判定口径：验收结论为通过/打回/无法判定（无基线为建议通过/建议整改/无法判定）。产出形态：必须产出「验收文档组」六个文件到本轮产物目录（用你自己的 write 工具写）：00-验收总览.md（判定+产物索引）、01-交付物概况与业务画像.md、02-偏差明细与取证.md、03-问题清单.md（供整改）、04-架构与质量评审.md、05-接手方案.md——每个文件承载对应章节的**细节**（逐条证据、数据、分级），总览只做结论与索引，不要把所有章节塞进一个文件。03-问题清单.md 用固定表格：编号 | 类别（四类偏差） | 位置（文件:行号） | 证据 | 级别（阻断/严重/一般） | 整改要求；优化项不进问题清单。架构与质量评审：04 文件按 ATAM 简化骨架组织——架构梳理（依赖图/模块边界/耦合表〔Ce·Ca 高者=中枢与脆弱点〕/孤儿与不可达文件）→ 质量属性场景（性能/可维护性/可测试性等，每条=场景描述+对应确定性证据）→ 敏感点/权衡点（架构决策的风险与取舍，无证据锚点不列）→ 优化项清单（高/中/低分组，每条=证据〔文件:行号+度量数字〕+判断+建议）→ 与接手方案衔接；检查清单参考：依赖环、孤儿模块、入口可达性、分层违规（有分层规则时直接引用 layering.violations）、超阈值复杂度（函数>80行/圈复杂度>15/文件>1000行）、重复片段；风格类主观项不列入优化项；优化项不影响验收结论、不进整改清单、不参与问题分级。复验轮次：对比事实包 changes 与 previous_issues 逐条评估修复状态——未修复/部分修复/已修复/无法判定（未做语义检查→无法判定；「未检查」绝不表述为「已修复」，防假已修复护栏），00-验收总览给出整改完成率（已修复数/上轮问题总数）；并对比两轮 architecture_facts 追踪架构趋势（新增/消失依赖环、复杂度增减、依赖增删）；「未检查」绝不表述为「无」。领域专项：车辆诊断（UDS）业务描述见插件工程 profiles/diagnostic/业务描述.md，相关交付物验收时应先读它并按其检查重点执行。',
     }), 'prompt: acceptance guide')
   }
 }

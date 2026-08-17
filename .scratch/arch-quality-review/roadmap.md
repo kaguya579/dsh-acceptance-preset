@@ -26,16 +26,16 @@
 1. ✅ **耦合度量深化**：Ce/Ca、模块间依赖矩阵、主序列距离——已实现（lib/modules.mjs，第二轮增量）；
 2. ✅ **图算法补全**：孤儿模块、入口可达性——已实现（computeReachability，第二轮增量）；
 3. ✅ **模块级度量聚合表**：行数/函数数/复杂度/重复统计/边数——已实现（第二轮增量）；
-4. 📐 **分层违规校验**：已设计定稿（agent 生成规则产物 + 白名单口径）——ticket 14，待实现；
-5. 📐 **依赖漂移检测**：已设计定稿（复验读上轮事实包，architecture_delta 节）——ticket 15，待实现；
-6. 📐 **HTML 事实仪表盘**：已设计定稿（只做事实仪表盘，SVG 手写无外部库）——ticket 16，待实现；
-7. 📐 **ATAM 骨架模板化**：已设计定稿（04 结构升级 + 术语词条）——ticket 17，待实现。
+4. ✅ **分层违规校验**：已实现（ticket 14：lib/layering.mjs 白名单校验 + layer_rules 参数 + 产物目录自动读取），smoke 场景 12 验证；
+5. ✅ **依赖漂移检测**：已实现（ticket 15：lib/delta.mjs + architecture_delta 节），smoke 场景 11 验证；
+6. ✅ **HTML 事实仪表盘**：已实现（ticket 16：lib/report.mjs + 验收仪表盘.html 自动落盘），smoke 场景 13 验证；
+7. ✅ **ATAM 骨架模板化**：已实现（ticket 17：04 结构升级指引 + 质量属性场景/敏感点/权衡点术语），待真实验收会话验证。
 
 ## 三、语义层增强
 
 - ✅ backlog 04：整改清单结构化 + 修复状态规则——已固化进 agent 指引（ticket 13），真实验收通过；
-- 📐 供应商档案：已设计定稿（决策 B：确定性台账工具 + agent 语义档案）——ticket 18，待实现；
-- 📐 云端 Java 专项业务描述：已设计定稿——ticket 19，待实现。
+- ✅ 供应商档案：已实现（ticket 18：lib/supplier.mjs 台账 + acceptance_supplier_profile 工具），smoke 场景 14 验证；
+- ✅ 云端 Java 专项业务描述：已实现（ticket 19：profiles/cloud-java/业务描述.md），待真实验收会话验证。
 
 ## 四、工程化与环境
 
